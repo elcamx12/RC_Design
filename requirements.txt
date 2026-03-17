@@ -1,0 +1,7 @@
+streamlit>=1.55.0
+plotly>=6.6.0
+numpy>=2.4.0
+pandas>=2.3.0
+pyarrow>=23.0.0
+pdfplumber>=0.11.0
+anthropic>=0.84.0

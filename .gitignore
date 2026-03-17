@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build artifacts (legacy)
+build/
+dist/
+dist_new/
+*.spec
+
+# Claude
+.claude/
+
+# Streamlit secrets (API keys - never commit)
+.streamlit/secrets.toml
+
+# Temp files
+*.tmp
