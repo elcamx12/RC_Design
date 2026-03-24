@@ -88,13 +88,16 @@ def _render_beam_table(beams: list):
             "상부배근":        _sv(rb.get("top")),
             "하부배근":        _sv(rb.get("bottom")),
             "스터럽":          _sv(rb.get("stirrup")),
+            # Loc (피복 역산용)
+            "Loc_top":        _sv(sec.get("Loc_top_mm")),
+            "Loc_bot":        _sv(sec.get("Loc_bot_mm")),
             # 검토비
             "M 검토비":        _sv(cr.get("moment"), "{:.3f}"),
             "V 검토비":        _sv(cr.get("shear"),  "{:.3f}"),
         })
 
     df_table = pd.DataFrame(rows)
-    st.dataframe(df_table, use_container_width=True, hide_index=True)
+    st.dataframe(df_table, width='stretch', hide_index=True)
 
     with st.expander("📋 개별 부재 상세 (JSON)"):
         names = [b.get("name", f"[{i}]") for i, b in enumerate(beams)]
@@ -131,15 +134,19 @@ def _render_column_table(cols: list):
             "Pu(kN)":      _sv(df.get("Pu_kN"),   "{:.2f}"),
             "Mux(kN·m)":   _sv(df.get("Mux_kNm"), "{:.2f}"),
             "Muy(kN·m)":   _sv(df.get("Muy_kNm"), "{:.2f}"),
+            "Vu(kN)":      _sv(df.get("Vu_I_kN"), "{:.2f}"),
             "LC 축력":      _sv(lc.get("axial_lc")),
             "배근":         _sv(rb.get("top")),
             "후프":         _sv(rb.get("stirrup")),
+            # Loc (피복 역산용)
+            "Loc_top":     _sv(sec.get("Loc_top_mm")),
+            "Loc_bot":     _sv(sec.get("Loc_bot_mm")),
             "P 검토비":     _sv(cr.get("axial"),  "{:.3f}"),
             "M 검토비":     _sv(cr.get("moment"), "{:.3f}"),
             "V 검토비":     _sv(cr.get("shear"),  "{:.3f}"),
         })
 
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
     with st.expander("📋 개별 부재 상세 (JSON)"):
         names = [c.get("name", f"[{i}]") for i, c in enumerate(cols)]

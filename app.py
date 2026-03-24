@@ -5,6 +5,7 @@ from pathlib import Path
 import streamlit as st
 import ui
 import calculation_manager
+from review import perform_review
 
 # ──────────────────────────────────────────────────────────────────────────
 # 패치노트 주간 그룹핑 (목요일~수요일 기준, 수요일 회의 보고용)
@@ -79,41 +80,58 @@ def _render_patch_notes():
 
 def main():
     st.set_page_config(page_title="RC 보-기둥 구조 설계", layout="wide")
-    st.title("🏗️ 1경간 양단 고정보 해석 및 RC 단면 설계")
 
-    # ── 패치노트 (접기/펼치기) ──
-    _render_patch_notes()
+    # ==================================================================
+    # 사이드바: 모드 선택 + 입력 조건 + 패치노트
+    # ==================================================================
+    with st.sidebar:
+        st.header("🏗️ RC 구조 설계")
+        design_mode = st.radio(
+            "모드 선택",
+            ["📐 분포하중 설계", "📄 구조계산서 검토"],
+            horizontal=True,
+            key="design_mode_radio",
+        )
+        st.divider()
 
-    # ──────────────────────────────────────────────────────────────────────
-    # 최상위 탭: RC 설계 / 구조계산서 분석
-    # ──────────────────────────────────────────────────────────────────────
-    tab_design, tab_pdf = st.tabs(["🔨 RC 단면 설계", "📄 구조계산서 AI 분석"])
+        inputs = None
+        review_inputs = None
 
-    # ── 탭 1: RC 단면 설계 (기존 기능) ───────────────────────────────────
-    with tab_design:
+        if design_mode == "📐 분포하중 설계":
+            inputs = ui.render_input_section()
+        else:
+            review_inputs = ui.render_review_input_section()
 
-        # ==================================================================
-        # 1. 입력 조건
-        # ==================================================================
-        inputs = ui.render_input_section()
+        st.divider()
+        _render_patch_notes()
 
-        # ==================================================================
-        # 2. 계산 실행
-        # ==================================================================
-        results = calculation_manager.perform_calculations(inputs)
-
-        # ==================================================================
-        # 3. 결과 출력
-        # ==================================================================
-        ui.render_output_section(results, inputs)
-
-    # ── 탭 2: 구조계산서 AI 분석 ──────────────────────────────────────────
-    with tab_pdf:
-        try:
-            from parsers import ui_pdf_viewer
-            ui_pdf_viewer.render_pdf_analysis_tab()
-        except ImportError as e:
-            st.error(f"ui_pdf_viewer 모듈 로드 오류: {e}")
+    # ==================================================================
+    # 메인 영역: 계산 + 결과
+    # ==================================================================
+    if design_mode == "📐 분포하중 설계":
+        if inputs is not None:
+            results = calculation_manager.perform_calculations(inputs)
+            ui.render_output_section(results, inputs)
+    else:
+        if review_inputs is not None:
+            # 디버그: 계산 입력값 확인
+            with st.expander("🔍 검토 입력값 디버그", expanded=False):
+                st.json(review_inputs)
+            results = perform_review(review_inputs)
+            # 디버그: 계산 결과값 확인
+            with st.expander("🔍 검토 결과값 디버그", expanded=False):
+                import json
+                # numpy 호환을 위한 변환
+                def _conv(o):
+                    import numpy as _np
+                    if isinstance(o, (_np.integer,)): return int(o)
+                    if isinstance(o, (_np.floating,)): return float(o)
+                    if isinstance(o, (_np.ndarray,)): return o.tolist()
+                    return str(o)
+                st.text(json.dumps(results, indent=2, default=_conv, ensure_ascii=False)[:5000])
+            ui.render_review_output_section(results)
+        else:
+            st.info("📄 사이드바에서 부재력을 입력하고 '검토 실행' 버튼을 누르세요.")
 
 
 if __name__ == "__main__":

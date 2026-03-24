@@ -2,6 +2,37 @@ import streamlit as st
 from .pdf_import import _pdf_import_section
 
 
+def _colored_input(label, key, orig_key=None):
+    """색상 인디케이터가 있는 text_input.
+    - 🔴 빨간바: 구조계산서에서 못 찾은 값 (원본=0 또는 None)
+    - 🟡 노란바: 사용자가 직접 수정한 값 (현재 != 원본)
+    - 표시없음: 구조계산서에서 정상적으로 가져온 값
+    반환: float (변환 실패 시 0.0)
+    """
+    _orig_key = orig_key or f"{key}_orig"
+    orig_val = st.session_state.get(_orig_key, 0.0)
+
+    # text_input 렌더링
+    val_str = st.text_input(label, key=key)
+
+    # 현재값
+    try:
+        cur_val = float(val_str.strip()) if val_str and val_str.strip() else 0.0
+    except ValueError:
+        cur_val = 0.0
+
+    # 색상 인디케이터
+    orig_f = float(orig_val) if orig_val else 0.0
+    if orig_f == 0.0 and cur_val == 0.0:
+        st.markdown('<div style="height:3px;background:#ff4444;border-radius:2px;margin-top:-10px;"></div>',
+                    unsafe_allow_html=True)
+    elif abs(cur_val - orig_f) > 0.001:
+        st.markdown('<div style="height:3px;background:#ffaa00;border-radius:2px;margin-top:-10px;"></div>',
+                    unsafe_allow_html=True)
+
+    return cur_val
+
+
 def _pick_size(override_key):
     """부재별 개별 추적: modified_sizes에 포함된 부재만 고정, 나머지는 수렴설계."""
     member = override_key.replace('override_', '')
@@ -15,8 +46,6 @@ def _pick_size(override_key):
 
 
 def render_input_section():
-    st.header("📝 입력 조건")
-
     _pdf_import_section()
 
     col1, col2 = st.columns(2)
@@ -82,7 +111,7 @@ def render_input_section():
         ]
 
     # ── 추가 / 삭제 버튼 ────────────────────────────────────────────
-    _btn_add, _btn_del, _spacer = st.columns([1, 1, 6])
+    _btn_add, _btn_del = st.columns(2)
     with _btn_add:
         if len(st.session_state['col_load_list']) < 4:
             if st.button("➕ 기둥 추가", key="col_add_btn"):
@@ -229,3 +258,378 @@ def render_input_section():
         'c_column_size': _pick_size('override_c_column'),
         't_slab_size': _pick_size('override_t_slab'),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 검토 모드 입력 섹션
+# ═══════════════════════════════════════════════════════════════════════
+
+def render_review_input_section():
+    # 배근 문자열에서 철근 직경(mm) 추출
+    _REBAR_DIA = {'D10':9.53,'D13':12.7,'D16':15.9,'D19':19.1,'D22':22.2,'D25':25.4,'D29':28.6,'D32':31.8}
+
+    def _parse_bar_dia(rebar_str):
+        """'3-D19' → 19.1, '2-D10@125' → 9.53"""
+        if not rebar_str:
+            return 0.0
+        import re as _re
+        m = _re.search(r'D(\d+)', str(rebar_str))
+        if m:
+            return _REBAR_DIA.get(f"D{m.group(1)}", 0.0)
+        return 0.0
+
+    def _estimate_cover(member):
+        """AI 결과에서 cover 역산. Loc가 있으면 역산, 없으면 기본값."""
+        sec = member.get('section', {}) or {}
+        rebar = member.get('rebar', {}) or {}
+
+        # Loc 값 확인 (AI 스키마에서 명시적으로 추출된 경우만)
+        loc_top = sec.get('Loc_top_mm')
+        loc_bot = sec.get('Loc_bot_mm')
+
+        # Loc가 숫자이고 합리적 범위(20~100mm)인 경우만 사용
+        loc = None
+        for _l in [loc_top, loc_bot]:
+            if isinstance(_l, (int, float)) and 20 <= _l <= 100:
+                loc = _l
+                break
+
+        if loc:
+            stirrup_str = rebar.get('stirrup', '')
+            main_top_str = rebar.get('top', '')
+            main_bot_str = rebar.get('bottom', '')
+
+            stirrup_dia = _parse_bar_dia(stirrup_str) if stirrup_str else 9.53
+            main_dia = _parse_bar_dia(main_top_str) or _parse_bar_dia(main_bot_str) or 19.1
+
+            cover = loc - stirrup_dia - main_dia / 2.0
+            # cover가 합리적 범위(10~80mm)인 경우만 사용
+            if 10 <= cover <= 80:
+                return round(cover, 1)
+
+        # Loc 없거나 역산 결과가 비합리적이면 0 (사용자가 입력해야 함)
+        return 0
+
+    """
+    구조계산서 검토 모드 입력 UI.
+
+    Returns:
+        dict (review_inputs) 또는 None (아직 분석 미완료)
+    """
+    from ui.pdf_import import _pdf_import_section
+
+    # PDF 업로드 + 분석
+    _pdf_import_section()
+
+    # ── AI 분석 결과에서 부재 목록 추출 ──
+    _ai_result = st.session_state.get('ai_analysis_result')
+    _all_beams = []
+    _all_cols = []
+    if _ai_result and not _ai_result.get('error'):
+        members = _ai_result.get('members', [])
+        for m in members:
+            if m.get('type') == 'beam':
+                _all_beams.append(m)
+            elif m.get('type') == 'column':
+                _all_cols.append(m)
+
+    # 디버그: AI 분석 결과 전체 확인
+    if _all_beams or _all_cols:
+        with st.expander("🔍 AI 분석 원본 데이터 (디버그)", expanded=False):
+            for idx, m in enumerate(_all_beams + _all_cols):
+                st.markdown(f"---\n**#{idx} {m.get('name')}** | type: `{m.get('type')}` | sw: `{m.get('software')}`")
+                st.caption("section:")
+                st.json(m.get('section', {}))
+                st.caption("design_forces:")
+                df = m.get('design_forces', {})
+                if df:
+                    # null이 아닌 값만 하이라이트
+                    non_null = {k: v for k, v in df.items() if v is not None}
+                    null_keys = [k for k, v in df.items() if v is None]
+                    st.json(non_null)
+                    if null_keys:
+                        st.warning(f"null인 키: {', '.join(null_keys)}")
+                else:
+                    st.error("design_forces 자체가 없음!")
+
+    st.markdown("---")
+    st.subheader("검토 부재 설정")
+
+    # 빈 값 강조 CSS (값이 0인 필드 배경을 연한 빨강으로)
+    st.markdown("""
+    <style>
+    .rv-missing input[type="number"] { background-color: #fff0f0 !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ── 부재 선택 ──
+    def _unique_name(m, i, prefix):
+        name = m.get('name', f'{prefix}_{i}')
+        sw = m.get('software', '')
+        return f"{name} [{sw}]" if sw else name
+
+    if _all_beams or _all_cols:
+        st.caption("AI 분석 결과에서 검토할 부재를 선택하세요.")
+        beam_names = [_unique_name(b, i, 'beam') for i, b in enumerate(_all_beams)]
+        col_names = [_unique_name(c, i, 'col') for i, c in enumerate(_all_cols)]
+
+        sel_beams = st.multiselect("🔵 검토할 보", beam_names,
+                                   default=beam_names, key="rv_sel_beams")
+        sel_cols = st.multiselect("🟠 검토할 기둥", col_names,
+                                  default=col_names, key="rv_sel_cols")
+
+        _selected_ai_beams = [_all_beams[i] for i, nm in enumerate(beam_names) if nm in sel_beams]
+        _selected_ai_cols = [_all_cols[i] for i, nm in enumerate(col_names) if nm in sel_cols]
+    else:
+        _selected_ai_beams = []
+        _selected_ai_cols = []
+
+    # ── 선택 변경 감지: 값 강제 초기화 ──
+    _sel_key = str(sel_beams if (_all_beams or _all_cols) else []) + str(sel_cols if (_all_beams or _all_cols) else [])
+    _prev_key = st.session_state.get('_rv_prev_sel', '')
+    _sel_changed = (_prev_key != _sel_key)
+    if _sel_changed:
+        st.session_state['_rv_prev_sel'] = _sel_key
+
+    # ── 보 입력 ──
+    st.markdown("#### 🔵 보 부재력")
+    if not _selected_ai_beams and not (_all_beams or _all_cols):
+        n_beams = st.number_input("보 개수", min_value=0, max_value=10, value=1, key="rv_n_beams")
+        _beam_sources = [{}] * int(n_beams)
+    else:
+        n_beams = len(_selected_ai_beams)
+        _beam_sources = _selected_ai_beams
+
+    beams = []
+    for i in range(int(n_beams)):
+        _ab = _beam_sources[i] if i < len(_beam_sources) else {}
+        _ab_sec = _ab.get('section', {}) or {}
+        _ab_mat = _ab.get('material', {}) or {}
+        _ab_df = _ab.get('design_forces', {}) or {}
+        _def_name = _ab.get('name', f"B{i+1}")
+        _def_h = int(_ab_sec.get('H_mm') or 0)
+        _def_b = int(_ab_sec.get('B_mm') or 0)
+        _def_fck = float(_ab_mat.get('fck_MPa') or 0)
+        _def_fy = float(_ab_mat.get('fy_MPa') or 0)
+        _def_cover = _estimate_cover(_ab)
+
+        # 선택 변경 시 session_state에 AI 값 강제 써넣기
+        if _sel_changed or f"rv_bh_{i}" not in st.session_state:
+            st.session_state[f"rv_bname_{i}"] = _def_name
+            st.session_state[f"rv_bh_{i}"] = str(_def_h)
+            st.session_state[f"rv_bb_{i}"] = str(_def_b)
+            st.session_state[f"rv_bfck_{i}"] = str(_def_fck)
+            st.session_state[f"rv_bfy_{i}"] = str(_def_fy)
+            st.session_state[f"rv_bcover_{i}"] = str(_def_cover)
+            # 원본값 저장
+            st.session_state[f"rv_bh_{i}_orig"] = float(_def_h)
+            st.session_state[f"rv_bb_{i}_orig"] = float(_def_b)
+            st.session_state[f"rv_bfck_{i}_orig"] = float(_def_fck)
+            st.session_state[f"rv_bfy_{i}_orig"] = float(_def_fy)
+            st.session_state[f"rv_bcover_{i}_orig"] = float(_def_cover)
+            for loc_name in ["END_I", "MID", "END_J"]:
+                _loc_map = {
+                    'END_I': {'mn': 'Mu_neg_I_kNm', 'mp': 'Mu_pos_I_kNm', 'vu': 'Vu_I_kN'},
+                    'MID':   {'mn': 'Mu_neg_MID_kNm', 'mp': 'Mu_pos_MID_kNm', 'vu': 'Vu_MID_kN'},
+                    'END_J': {'mn': 'Mu_neg_J_kNm', 'mp': 'Mu_pos_J_kNm', 'vu': 'Vu_J_kN'},
+                }
+                _lm = _loc_map[loc_name]
+                _v_mn = abs(float(_ab_df.get(_lm['mn']) or 0))
+                _v_mp = abs(float(_ab_df.get(_lm['mp']) or 0))
+                _v_vu = abs(float(_ab_df.get(_lm['vu']) or 0))
+                # 현재값 + 원본값 동시 저장
+                st.session_state[f"rv_mn_{i}_{loc_name}"] = str(_v_mn)
+                st.session_state[f"rv_mp_{i}_{loc_name}"] = str(_v_mp)
+                st.session_state[f"rv_vu_{i}_{loc_name}"] = str(_v_vu)
+                st.session_state[f"rv_mn_{i}_{loc_name}_orig"] = _v_mn
+                st.session_state[f"rv_mp_{i}_{loc_name}_orig"] = _v_mp
+                st.session_state[f"rv_vu_{i}_{loc_name}_orig"] = _v_vu
+
+        with st.expander(f"보 {i+1}: {_def_name}", expanded=(i == 0)):
+            bc1, bc2, bc3, bc4, bc5, bc6 = st.columns([2, 1, 1, 1, 1, 1])
+            with bc1:
+                bname = st.text_input("부재명", key=f"rv_bname_{i}")
+            with bc2:
+                bh = _colored_input("h (mm)", f"rv_bh_{i}")
+            with bc3:
+                bb = _colored_input("b (mm)", f"rv_bb_{i}")
+            with bc4:
+                b_fck = _colored_input("fck (MPa)", f"rv_bfck_{i}")
+            with bc5:
+                b_fy = _colored_input("fy (MPa)", f"rv_bfy_{i}")
+            with bc6:
+                b_cover = _colored_input("cover (mm)", f"rv_bcover_{i}")
+
+            # 구조계산서 형식: 항목별 행, 위치(I/MID/J)별 열
+            st.caption("**부재력 (END-I / MID / END-J)**")
+            _hdr1, _hdr2, _hdr3, _hdr4 = st.columns([1.5, 1, 1, 1])
+            _hdr1.markdown("")
+            _hdr2.markdown("**END-I**")
+            _hdr3.markdown("**MID**")
+            _hdr4.markdown("**END-J**")
+
+            # (-) Moment
+            _r1, _c1i, _c1m, _c1j = st.columns([1.5, 1, 1, 1])
+            _r1.markdown("(-) Mu kN·m")
+            with _c1i: mn_i = _colored_input("Mu(-) I", f"rv_mn_{i}_END_I")
+            with _c1m: mn_m = _colored_input("Mu(-) M", f"rv_mn_{i}_MID")
+            with _c1j: mn_j = _colored_input("Mu(-) J", f"rv_mn_{i}_END_J")
+
+            # (+) Moment
+            _r2, _c2i, _c2m, _c2j = st.columns([1.5, 1, 1, 1])
+            _r2.markdown("(+) Mu kN·m")
+            with _c2i: mp_i = _colored_input("Mu(+) I", f"rv_mp_{i}_END_I")
+            with _c2m: mp_m = _colored_input("Mu(+) M", f"rv_mp_{i}_MID")
+            with _c2j: mp_j = _colored_input("Mu(+) J", f"rv_mp_{i}_END_J")
+
+            # Shear
+            _r3, _c3i, _c3m, _c3j = st.columns([1.5, 1, 1, 1])
+            _r3.markdown("Vu kN")
+            with _c3i: vu_i = _colored_input("Vu I", f"rv_vu_{i}_END_I")
+            with _c3m: vu_m = _colored_input("Vu M", f"rv_vu_{i}_MID")
+            with _c3j: vu_j = _colored_input("Vu J", f"rv_vu_{i}_END_J")
+
+            locations = {
+                'END_I': {'Mu_neg': mn_i, 'Mu_pos': mp_i, 'Vu': vu_i},
+                'MID':   {'Mu_neg': mn_m, 'Mu_pos': mp_m, 'Vu': vu_m},
+                'END_J': {'Mu_neg': mn_j, 'Mu_pos': mp_j, 'Vu': vu_j},
+            }
+
+            # 구조계산서 배근 + Loc (검증용)
+            st.caption("**구조계산서 배근 / Loc (검증용)**")
+            _rb_ai = _ab.get('rebar', {}) or {}
+            # 배근 기본값
+            _def_rtop = _rb_ai.get('top') or ""
+            _def_rbot = _rb_ai.get('bottom') or ""
+            _def_rstir = _rb_ai.get('stirrup') or ""
+            _def_loc_t = _ab.get('section', {}).get('Loc_top_mm') or 0
+            _def_loc_b = _ab.get('section', {}).get('Loc_bot_mm') or 0
+            if _sel_changed or f"rv_rtop_{i}" not in st.session_state:
+                st.session_state[f"rv_rtop_{i}"] = str(_def_rtop)
+                st.session_state[f"rv_rbot_{i}"] = str(_def_rbot)
+                st.session_state[f"rv_rstir_{i}"] = str(_def_rstir)
+                st.session_state[f"rv_loct_{i}"] = str(float(_def_loc_t))
+                st.session_state[f"rv_locb_{i}"] = str(float(_def_loc_b))
+                st.session_state[f"rv_loct_{i}_orig"] = float(_def_loc_t)
+                st.session_state[f"rv_locb_{i}_orig"] = float(_def_loc_b)
+
+            _rb1, _rb2, _rb3 = st.columns(3)
+            with _rb1:
+                rtop = st.text_input("TOP 배근", key=f"rv_rtop_{i}")
+            with _rb2:
+                rbot = st.text_input("BOT 배근", key=f"rv_rbot_{i}")
+            with _rb3:
+                rstir = st.text_input("STIRRUPS", key=f"rv_rstir_{i}")
+            _lc1, _lc2 = st.columns(2)
+            with _lc1:
+                loc_t = _colored_input("Loc_top (mm)", f"rv_loct_{i}")
+            with _lc2:
+                loc_b = _colored_input("Loc_bot (mm)", f"rv_locb_{i}")
+
+            beams.append({
+                'name': bname, 'h_beam': bh, 'b_beam': bb,
+                'fc_k': b_fck, 'fy': b_fy, 'cover': b_cover,
+                'Loc_top': loc_t, 'Loc_bot': loc_b,
+                'rebar_top': rtop, 'rebar_bot': rbot, 'stirrup': rstir,
+                'locations': locations,
+            })
+
+    # ── 기둥 입력 ──
+    st.markdown("#### 🟠 기둥 부재력")
+    if not _selected_ai_cols and not (_all_beams or _all_cols):
+        n_cols = st.number_input("기둥 개수", min_value=0, max_value=10, value=1, key="rv_n_cols")
+        _col_sources = [{}] * int(n_cols)
+    else:
+        n_cols = len(_selected_ai_cols)
+        _col_sources = _selected_ai_cols
+
+    columns = []
+    for i in range(int(n_cols)):
+        _ac = _col_sources[i] if i < len(_col_sources) else {}
+        _ac_sec = _ac.get('section', {}) or {}
+        _ac_mat = _ac.get('material', {}) or {}
+        _ac_geo = _ac.get('geometry', {}) or {}
+        _ac_df = _ac.get('design_forces', {}) or {}
+        _def_cname = _ac.get('name', f"C{i+1}")
+        _def_bx = int(_ac_sec.get('Cx_mm') or _ac_sec.get('B_mm') or 0)
+        _def_by = int(_ac_sec.get('Cy_mm') or _ac_sec.get('H_mm') or _def_bx)
+        _def_hcol = int(float(_ac_geo.get('height_m') or 0) * 1000)
+        _def_pu = abs(float(_ac_df.get('Pu_kN') or 0))
+        _def_mux = abs(float(_ac_df.get('Mux_kNm') or 0))
+        _def_muy = abs(float(_ac_df.get('Muy_kNm') or 0))
+        _def_cfck = float(_ac_mat.get('fck_MPa') or 0)
+        _def_cfy = float(_ac_mat.get('fy_MPa') or 0)
+        _def_ccover = _estimate_cover(_ac)
+
+        # 선택 변경 시 session_state에 AI 값 강제 써넣기
+        if _sel_changed or f"rv_cbx_{i}" not in st.session_state:
+            st.session_state[f"rv_cname_{i}"] = _def_cname
+            st.session_state[f"rv_cbx_{i}"] = str(_def_bx)
+            st.session_state[f"rv_cby_{i}"] = str(_def_by)
+            st.session_state[f"rv_hcol_{i}"] = str(_def_hcol)
+            st.session_state[f"rv_cfck_{i}"] = str(_def_cfck)
+            st.session_state[f"rv_cfy_{i}"] = str(_def_cfy)
+            st.session_state[f"rv_ccover_{i}"] = str(_def_ccover)
+            # 원본값 저장
+            st.session_state[f"rv_cbx_{i}_orig"] = float(_def_bx)
+            st.session_state[f"rv_cby_{i}_orig"] = float(_def_by)
+            st.session_state[f"rv_hcol_{i}_orig"] = float(_def_hcol)
+            st.session_state[f"rv_cfck_{i}_orig"] = float(_def_cfck)
+            st.session_state[f"rv_cfy_{i}_orig"] = float(_def_cfy)
+            st.session_state[f"rv_ccover_{i}_orig"] = float(_def_ccover)
+
+        with st.expander(f"기둥 {i+1}: {_def_cname}", expanded=(i == 0)):
+            cc1, cc2, cc3, cc4, cc5, cc6, cc7 = st.columns([2, 1, 1, 1, 1, 1, 1])
+            with cc1:
+                cname = st.text_input("부재명", key=f"rv_cname_{i}")
+            with cc2:
+                cbx = _colored_input("bx (mm)", f"rv_cbx_{i}")
+            with cc3:
+                cby = _colored_input("by (mm)", f"rv_cby_{i}")
+            with cc4:
+                hcol = _colored_input("H_col (mm)", f"rv_hcol_{i}")
+            with cc5:
+                c_fck = _colored_input("fck (MPa)", f"rv_cfck_{i}")
+            with cc6:
+                c_fy = _colored_input("fy (MPa)", f"rv_cfy_{i}")
+            with cc7:
+                c_cover = _colored_input("cover (mm)", f"rv_ccover_{i}")
+
+            # 선택 변경 시 부재력도 강제 써넣기 + 원본값 저장
+            if _sel_changed or f"rv_cpu_{i}" not in st.session_state:
+                st.session_state[f"rv_cpu_{i}"] = str(_def_pu)
+                st.session_state[f"rv_cmux_{i}"] = str(_def_mux)
+                st.session_state[f"rv_cmuy_{i}"] = str(_def_muy)
+                st.session_state[f"rv_cpu_{i}_orig"] = _def_pu
+                st.session_state[f"rv_cmux_{i}_orig"] = _def_mux
+                st.session_state[f"rv_cmuy_{i}_orig"] = _def_muy
+
+            fc1, fc2, fc3 = st.columns(3)
+            with fc1:
+                pu = _colored_input("Pu (kN)", f"rv_cpu_{i}")
+            with fc2:
+                mux = _colored_input("Mux (kN·m)", f"rv_cmux_{i}")
+            with fc3:
+                muy = _colored_input("Muy (kN·m)", f"rv_cmuy_{i}")
+
+            columns.append({
+                'name': cname, 'bx': cbx, 'by': cby,
+                'c_column': max(cbx, cby),
+                'h_column': hcol,
+                'fc_k': c_fck, 'fy': c_fy, 'cover': c_cover,
+                'Pu': pu, 'Mux': mux, 'Muy': muy,
+            })
+
+    # 검토 실행 버튼
+    if st.button("▶ 검토 실행", type="primary", key="rv_run_btn"):
+        review_inputs = {
+            'beams': beams, 'columns': columns,
+        }
+        st.session_state['rv_last_inputs'] = review_inputs
+        return review_inputs
+
+    # 버튼 안 눌렸어도 이전 입력값이 있으면 그대로 반환 (결과 유지)
+    if 'rv_last_inputs' in st.session_state:
+        return st.session_state['rv_last_inputs']
+
+    return None

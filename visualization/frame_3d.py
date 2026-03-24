@@ -195,11 +195,31 @@ def plot_3d_frame_forces(results, inputs, vis_options):
         fig.add_trace(go.Scatter3d(x=[Lx+_dim_off-_tick_l, Lx+_dim_off+_tick_l], y=[0, 0], z=[_zz]*2,
             mode='lines', line=dict(color=_txt_col, width=1.5), showlegend=False, hoverinfo='skip'))
 
-    # 5. 레이아웃 — 그리드 제거 + 축 라벨 숨김
+    # 5. 범례 (선택된 부재력도에 대한 색상 설명)
+    _legend_items = []
+    if "보 BMD" in vis_options:
+        _legend_items.append(('red', '보 BMD (kN·m)'))
+    if "보 SFD" in vis_options:
+        _legend_items.append(('blue', 'X보 SFD (kN)'))
+        _legend_items.append(('green', 'Y보 SFD (kN)'))
+    if "기둥 AFD" in vis_options:
+        _legend_items.append(('orange', '기둥 AFD (kN)'))
+    if "기둥 BMD" in vis_options:
+        _legend_items.append(('purple', '기둥 BMD-Y (kN·m)'))
+        _legend_items.append(('darkviolet', '기둥 BMD-X (kN·m)'))
+    for _lc, _ln in _legend_items:
+        fig.add_trace(go.Scatter3d(
+            x=[None], y=[None], z=[None],
+            mode='lines', name=_ln,
+            line=dict(color=_lc, width=4),
+            showlegend=True
+        ))
+
+    # 6. 레이아웃 — 그리드 제거 + 축 라벨 숨김
     _no_axis = dict(showgrid=False, showbackground=False, zeroline=False,
                     showticklabels=False, showline=False, title='')
     fig.update_layout(
-        title=f'3D 모듈러 프레임 부재력도',
+        title='3D Modular Frame Forces',
         scene=dict(
             xaxis=_no_axis,
             yaxis=_no_axis,
@@ -207,7 +227,9 @@ def plot_3d_frame_forces(results, inputs, vis_options):
             aspectmode='data'
         ),
         margin=dict(l=0, r=0, b=0, t=40),
-        height=700
+        height=700,
+        legend=dict(x=0.01, y=0.99, bgcolor='rgba(255,255,255,0.8)',
+                    font=dict(size=11))
     )
 
     return fig
@@ -785,7 +807,7 @@ def plot_3d_frame_rebar(results, inputs):
     _no_axis = dict(showgrid=False, showbackground=False, zeroline=False,
                     showticklabels=False, showline=False, title='')
     fig.update_layout(
-        title="3D 통합 프레임 배근도",
+        title="3D Frame Rebar Detail",
         scene=dict(
             xaxis=_no_axis,
             yaxis=_no_axis,

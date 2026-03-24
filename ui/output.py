@@ -3,7 +3,8 @@ import numpy as np
 import os
 import re
 import pandas as pd
-from visualization import (plot_rebar_section, plot_beam_side_view,
+import matplotlib.pyplot as plt
+from visualization import (plot_rebar_section, plot_rebar_section_review, plot_beam_side_view,
                            plot_column_section, plot_column_side_view,
                            plot_3d_frame_rebar, plot_pm_diagram, plot_slab_section)
 
@@ -459,6 +460,26 @@ def render_output_section(results, inputs):
     columns  = results.get('columns', [results['column']])
     column   = columns[0]
 
+    # === 메인 영역 탭 구조 (맨 위) ===
+    _args = (results, inputs, common, beam_x, beam_y, columns, column)
+    _slab_type_label = common.get('slab_type', '1방향')
+
+    tab_result, tab_vis, tab_report = st.tabs(["📋 설계 결과", "📊 시각화", "📄 보고서"])
+
+    with tab_vis:
+        _render_visualization(*_args)
+
+    with tab_report:
+        _render_report_download(results, inputs)
+        _render_todo(*_args)
+
+    with tab_result:
+        _render_design_result_tab(results, inputs, common, beam_x, beam_y, columns, column, _slab_type_label, _args)
+
+    # (설계 결과 탭 내용은 _render_design_result_tab으로 분리)
+
+
+def _render_design_result_tab(results, inputs, common, beam_x, beam_y, columns, column, _slab_type_label, _args):
     # --------------------------------------------------------------------------
     # 3.1 단면 결정 결과
     # --------------------------------------------------------------------------
@@ -726,20 +747,16 @@ def render_output_section(results, inputs):
                 st.write(f"보 폭 기반 기둥 단면 ($c_{{beam}}$): {_col_c_beam:.0f} mm")
                 st.write(f"최종 기둥 단면 ($c$): {_col_c_final:.0f} mm")
 
-    # === 이후 섹션은 _append_* 함수들로 순차 추가 예정 ===
-    _render_sections_2_to_4(results, inputs, common, beam_x, beam_y, columns, column)
-    _slab_type_label = common.get('slab_type', '1방향')
+    # === 설계 결과 탭 계속 (Override 이후) ===
+    _render_sections_2_to_4(*_args)
     with st.expander(f"5. 슬래브 설계 ({_slab_type_label} 슬래브)", expanded=False):
-        _render_slab_design(results, inputs, common, beam_x, beam_y, columns, column)
+        _render_slab_design(*_args)
     with st.expander("6. 보 설계", expanded=False):
-        _render_beam_design(results, inputs, common, beam_x, beam_y, columns, column)
+        _render_beam_design(*_args)
     with st.expander("7. 기둥 설계", expanded=False):
-        _render_column_design(results, inputs, common, beam_x, beam_y, columns, column)
-    _render_joint_seismic(results, inputs, common, beam_x, beam_y, columns, column)
-    _render_crack_development(results, inputs, common, beam_x, beam_y, columns, column)
-    _render_visualization(results, inputs, common, beam_x, beam_y, columns, column)
-    _render_report_download(results, inputs)
-    _render_todo(results, inputs, common, beam_x, beam_y, columns, column)
+        _render_column_design(*_args)
+    _render_joint_seismic(*_args)
+    _render_crack_development(*_args)
 
 
 # === STUB 함수들 — '계속해' 시 순차적으로 내용 채움 ===
@@ -957,7 +974,7 @@ def _render_sections_2_to_4(results, inputs, common, beam_x, beam_y, columns, co
         with st.spinner("3D 프레임을 렌더링 중입니다... (잠시만 기다려주세요)"):
             from visualization import plot_3d_frame_forces
             fig_3d_forces = plot_3d_frame_forces(results, inputs, vis_options)
-            st.plotly_chart(fig_3d_forces, use_container_width=True, key="chart_3d_forces")
+            st.plotly_chart(fig_3d_forces, width='stretch', key="chart_3d_forces")
 
     st.divider()
 
@@ -1145,58 +1162,31 @@ def _render_beam_design(results, inputs, common, beam_x, beam_y, columns, column
         _render_rebar_expander("Y보 하부근 배근 상세", beam_y['rebar_steps_bot'],
                                beam_y['As_bot'], beam_y['design_params']['b_beam'])
 
-    # ── 보 단면도 & 측면도 ──
+    # ── 보 단면도 & 측면도 (MIDAS 스타일: X방향 → Y방향 순서) ──
     st.markdown("---")
-    st.markdown("##### 지점부 단면도 (Support Section) - 상부근 주근")
-    _bsup1, _bsup2 = st.columns(2)
-    with _bsup1:
-        fig_sup_x = plot_rebar_section(
-            beam_x['design_params']['b_beam'], beam_x['design_params']['h_beam'],
-            beam_x['rebar_string_top'], beam_x['rebar_steps_top'], beam_x['layer_top'],
-            beam_x['rebar_string_bot'], beam_x['rebar_steps_bot'], beam_x['layer_bot'],
-            'X', beam_x['s'], section_location='support',
-            rebar_string_min=beam_x['rebar_string_min'],
-            rebar_steps_min=beam_x['rebar_steps_min'],
-            layer_min=beam_x['layer_min'])
-        st.plotly_chart(fig_sup_x, use_container_width=True, key="chart_sup_x")
-    with _bsup2:
-        fig_sup_y = plot_rebar_section(
-            beam_y['design_params']['b_beam'], beam_y['design_params']['h_beam'],
-            beam_y['rebar_string_top'], beam_y['rebar_steps_top'], beam_y['layer_top'],
-            beam_y['rebar_string_bot'], beam_y['rebar_steps_bot'], beam_y['layer_bot'],
-            'Y', beam_y['s'], section_location='support',
-            rebar_string_min=beam_y['rebar_string_min'],
-            rebar_steps_min=beam_y['rebar_steps_min'],
-            layer_min=beam_y['layer_min'])
-        st.plotly_chart(fig_sup_y, use_container_width=True, key="chart_sup_y")
+    st.markdown("##### X방향 보 단면도 (END-I / MID / END-J)")
+    fig_x_combined = plot_rebar_section(
+        beam_x['design_params']['b_beam'], beam_x['design_params']['h_beam'],
+        beam_x['rebar_string_top'], beam_x['rebar_steps_top'], beam_x['layer_top'],
+        beam_x['rebar_string_bot'], beam_x['rebar_steps_bot'], beam_x['layer_bot'],
+        'X', beam_x['s'], section_location='combined',
+        rebar_string_min=beam_x['rebar_string_min'],
+        rebar_steps_min=beam_x['rebar_steps_min'],
+        layer_min=beam_x['layer_min'])
+    st.pyplot(fig_x_combined); plt.close(fig_x_combined)
 
-    st.markdown("##### 중앙부 단면도 (Midspan Section) - 하부근 주근")
-    _bmid1, _bmid2 = st.columns(2)
-    with _bmid1:
-        fig_mid_x = plot_rebar_section(
-            beam_x['design_params']['b_beam'], beam_x['design_params']['h_beam'],
-            beam_x['rebar_string_top'], beam_x['rebar_steps_top'], beam_x['layer_top'],
-            beam_x['rebar_string_bot'], beam_x['rebar_steps_bot'], beam_x['layer_bot'],
-            'X', beam_x['s'], section_location='midspan',
-            rebar_string_min=beam_x['rebar_string_min'],
-            rebar_steps_min=beam_x['rebar_steps_min'],
-            layer_min=beam_x['layer_min'])
-        st.plotly_chart(fig_mid_x, use_container_width=True, key="chart_mid_x")
-    with _bmid2:
-        fig_mid_y = plot_rebar_section(
-            beam_y['design_params']['b_beam'], beam_y['design_params']['h_beam'],
-            beam_y['rebar_string_top'], beam_y['rebar_steps_top'], beam_y['layer_top'],
-            beam_y['rebar_string_bot'], beam_y['rebar_steps_bot'], beam_y['layer_bot'],
-            'Y', beam_y['s'], section_location='midspan',
-            rebar_string_min=beam_y['rebar_string_min'],
-            rebar_steps_min=beam_y['rebar_steps_min'],
-            layer_min=beam_y['layer_min'])
-        st.plotly_chart(fig_mid_y, use_container_width=True, key="chart_mid_y")
+    st.markdown("##### Y방향 보 단면도 (END-I / MID / END-J)")
+    fig_y_combined = plot_rebar_section(
+        beam_y['design_params']['b_beam'], beam_y['design_params']['h_beam'],
+        beam_y['rebar_string_top'], beam_y['rebar_steps_top'], beam_y['layer_top'],
+        beam_y['rebar_string_bot'], beam_y['rebar_steps_bot'], beam_y['layer_bot'],
+        'Y', beam_y['s'], section_location='combined',
+        rebar_string_min=beam_y['rebar_string_min'],
+        rebar_steps_min=beam_y['rebar_steps_min'],
+        layer_min=beam_y['layer_min'])
+    st.pyplot(fig_y_combined); plt.close(fig_y_combined)
 
-    st.markdown("---")
-    st.markdown("##### 🟫 보 측면도 (Side View)")
-    _bside1, _bside2 = st.columns(2)
-    with _bside1:
+    with st.expander("Beam Side View (Debugging)", expanded=False):
         fig2 = plot_beam_side_view(
             inputs['L_x'], beam_x['design_params']['h_beam'],
             beam_x['rebar_string_top'], beam_x['rebar_steps_top'], beam_x['layer_top'],
@@ -1207,8 +1197,7 @@ def _render_beam_design(results, inputs, common, beam_x, beam_y, columns, column
             layer_min=beam_x['layer_min'],
             dev_top=beam_x.get('dev_top'), dev_bot=beam_x.get('dev_bot'),
             stirrup_zones=beam_x.get('stirrup_zones'))
-        st.plotly_chart(fig2, use_container_width=True, key="chart_side_x")
-    with _bside2:
+        st.pyplot(fig2); plt.close(fig2)
         fig5 = plot_beam_side_view(
             inputs['L_y'], beam_y['design_params']['h_beam'],
             beam_y['rebar_string_top'], beam_y['rebar_steps_top'], beam_y['layer_top'],
@@ -1219,7 +1208,7 @@ def _render_beam_design(results, inputs, common, beam_x, beam_y, columns, column
             layer_min=beam_y['layer_min'],
             dev_top=beam_y.get('dev_top'), dev_bot=beam_y.get('dev_bot'),
             stirrup_zones=beam_y.get('stirrup_zones'))
-        st.plotly_chart(fig5, use_container_width=True, key="chart_side_y")
+        st.pyplot(fig5); plt.close(fig5)
 
     # ── 바닥보 (보 설계 하위) ──
     _render_ground_beam(results, inputs, common, beam_x, beam_y, columns, column)
@@ -1446,9 +1435,9 @@ def _render_column_design(results, inputs, common, beam_x, beam_y, columns, colu
                     st.write(f"최종 띠철근 간격: {col_r['tie_rebar_design']['tie_rebar_spacing']:.0f} mm (50mm 단위 내림)")
 
 
-    # ── 기둥 단면도 & 측면도 ──
+    # ── 기둥 단면도 & 측면도 (같은 줄에 배치) ──
     st.markdown("---")
-    st.markdown("##### 기둥 단면도")
+    st.markdown("##### 기둥 단면도 & 측면도")
     _col_vis_labels = [col_r.get('col_name', f'기둥 {i+1}') for i, col_r in enumerate(columns)]
     if len(columns) == 1:
         _col_vis_tabs = [st.container()]
@@ -1466,24 +1455,15 @@ def _render_column_design(results, inputs, common, beam_x, beam_y, columns, colu
                 tie_type=_col_ds_v['tie_rebar_type'],
                 tie_dia=_col_ds_v['tie_rebar_diameter'],
                 tie_spacing=_col_ds_v['tie_rebar_spacing'])
-            st.plotly_chart(col_fig1, use_container_width=True, key=f"chart_col_section_{_vi}")
-
-    st.markdown("##### 기둥 측면도")
-    if len(columns) == 1:
-        _col_side_tabs = [st.container()]
-    else:
-        _col_side_tabs = st.tabs(_col_vis_labels)
-    for _vi, (_cstab, col_r) in enumerate(zip(_col_side_tabs, columns)):
-        with _cstab:
-            _col_dim_v = col_r['dimensions']
-            _col_ds_v  = col_r['tie_rebar_design']
-            col_fig2 = plot_column_side_view(
-                h_column=inputs['h_column'],
-                c_column=_col_dim_v['c_column'],
-                tie_spacing=_col_ds_v['tie_rebar_spacing'],
-                tie_dia=_col_ds_v['tie_rebar_diameter'],
-                rebar_dia=_col_ds_v['rebar_diameter_col'])
-            st.plotly_chart(col_fig2, use_container_width=True, key=f"chart_col_side_{_vi}")
+            st.pyplot(col_fig1); plt.close(col_fig1)
+            with st.expander("Column Side View (Debugging)", expanded=False):
+                col_fig2 = plot_column_side_view(
+                    h_column=inputs['h_column'],
+                    c_column=_col_dim_v['c_column'],
+                    tie_spacing=_col_ds_v['tie_rebar_spacing'],
+                    tie_dia=_col_ds_v['tie_rebar_diameter'],
+                    rebar_dia=_col_ds_v['rebar_diameter_col'])
+                st.pyplot(col_fig2); plt.close(col_fig2)
 
 def _render_slab_design(results, inputs, common, beam_x, beam_y, columns, column):
     """섹션 7: 슬래브 설계"""
@@ -1595,8 +1575,10 @@ def _render_slab_design(results, inputs, common, beam_x, beam_y, columns, column
         st.markdown("#### 슬래브 단면도")
         _slab_fig = plot_slab_section(
             slab_dp['t_slab'], slab['rebar_string_top'], slab['rebar_string_bot'],
-            rebar_string_dist=slab['rebar_string_dist'], cover=slab_dp.get('cover', 20.0))
-        st.plotly_chart(_slab_fig, use_container_width=True, key="chart_slab_section")
+            rebar_string_dist=slab['rebar_string_dist'], cover=slab_dp.get('cover', 20.0),
+            fck=inputs.get('fc_k', 24.0), fy=inputs.get('fy', 400.0))
+        st.pyplot(_slab_fig)
+        plt.close(_slab_fig)
 
 def _render_ground_beam(results, inputs, common, beam_x, beam_y, columns, column):
     """섹션 8: 바닥보 설계"""
@@ -1647,55 +1629,29 @@ def _render_ground_beam(results, inputs, common, beam_x, beam_y, columns, column
                     st.write(f"- 늑근: D10 @ {ground_y['s']:.0f} mm")
 
                 st.markdown("---")
-                st.markdown("##### 지점부 단면도 (Support Section) - 상부근 주근")
-                _gb_sup1, _gb_sup2 = st.columns(2)
-                with _gb_sup1:
-                    _fig_gb_sup_x = plot_rebar_section(
-                        ground_x['design_params']['b_beam'], ground_x['design_params']['h_beam'],
-                        ground_x['rebar_string_top'], ground_x['rebar_steps_top'], ground_x['layer_top'],
-                        ground_x['rebar_string_bot'], ground_x['rebar_steps_bot'], ground_x['layer_bot'],
-                        'X', ground_x['s'], section_location='support',
-                        rebar_string_min=ground_x['rebar_string_min'],
-                        rebar_steps_min=ground_x['rebar_steps_min'],
-                        layer_min=ground_x['layer_min'])
-                    st.plotly_chart(_fig_gb_sup_x, use_container_width=True, key="chart_gb_sup_x")
-                with _gb_sup2:
-                    _fig_gb_sup_y = plot_rebar_section(
-                        ground_y['design_params']['b_beam'], ground_y['design_params']['h_beam'],
-                        ground_y['rebar_string_top'], ground_y['rebar_steps_top'], ground_y['layer_top'],
-                        ground_y['rebar_string_bot'], ground_y['rebar_steps_bot'], ground_y['layer_bot'],
-                        'Y', ground_y['s'], section_location='support',
-                        rebar_string_min=ground_y['rebar_string_min'],
-                        rebar_steps_min=ground_y['rebar_steps_min'],
-                        layer_min=ground_y['layer_min'])
-                    st.plotly_chart(_fig_gb_sup_y, use_container_width=True, key="chart_gb_sup_y")
+                st.markdown("##### 지중보 X방향 단면도 (END-I / MID / END-J)")
+                _fig_gb_x = plot_rebar_section(
+                    ground_x['design_params']['b_beam'], ground_x['design_params']['h_beam'],
+                    ground_x['rebar_string_top'], ground_x['rebar_steps_top'], ground_x['layer_top'],
+                    ground_x['rebar_string_bot'], ground_x['rebar_steps_bot'], ground_x['layer_bot'],
+                    'X', ground_x['s'], section_location='combined',
+                    rebar_string_min=ground_x['rebar_string_min'],
+                    rebar_steps_min=ground_x['rebar_steps_min'],
+                    layer_min=ground_x['layer_min'])
+                st.pyplot(_fig_gb_x); plt.close(_fig_gb_x)
 
-                st.markdown("##### 중앙부 단면도 (Midspan Section) - 하부근 주근")
-                _gb_mid1, _gb_mid2 = st.columns(2)
-                with _gb_mid1:
-                    _fig_gb_mid_x = plot_rebar_section(
-                        ground_x['design_params']['b_beam'], ground_x['design_params']['h_beam'],
-                        ground_x['rebar_string_top'], ground_x['rebar_steps_top'], ground_x['layer_top'],
-                        ground_x['rebar_string_bot'], ground_x['rebar_steps_bot'], ground_x['layer_bot'],
-                        'X', ground_x['s'], section_location='midspan',
-                        rebar_string_min=ground_x['rebar_string_min'],
-                        rebar_steps_min=ground_x['rebar_steps_min'],
-                        layer_min=ground_x['layer_min'])
-                    st.plotly_chart(_fig_gb_mid_x, use_container_width=True, key="chart_gb_mid_x")
-                with _gb_mid2:
-                    _fig_gb_mid_y = plot_rebar_section(
-                        ground_y['design_params']['b_beam'], ground_y['design_params']['h_beam'],
-                        ground_y['rebar_string_top'], ground_y['rebar_steps_top'], ground_y['layer_top'],
-                        ground_y['rebar_string_bot'], ground_y['rebar_steps_bot'], ground_y['layer_bot'],
-                        'Y', ground_y['s'], section_location='midspan',
-                        rebar_string_min=ground_y['rebar_string_min'],
-                        rebar_steps_min=ground_y['rebar_steps_min'],
-                        layer_min=ground_y['layer_min'])
-                    st.plotly_chart(_fig_gb_mid_y, use_container_width=True, key="chart_gb_mid_y")
+                st.markdown("##### 지중보 Y방향 단면도 (END-I / MID / END-J)")
+                _fig_gb_y = plot_rebar_section(
+                    ground_y['design_params']['b_beam'], ground_y['design_params']['h_beam'],
+                    ground_y['rebar_string_top'], ground_y['rebar_steps_top'], ground_y['layer_top'],
+                    ground_y['rebar_string_bot'], ground_y['rebar_steps_bot'], ground_y['layer_bot'],
+                    'Y', ground_y['s'], section_location='combined',
+                    rebar_string_min=ground_y['rebar_string_min'],
+                    rebar_steps_min=ground_y['rebar_steps_min'],
+                    layer_min=ground_y['layer_min'])
+                st.pyplot(_fig_gb_y); plt.close(_fig_gb_y)
 
-                st.markdown("##### 측면도 (Side View)")
-                _gb_side1, _gb_side2 = st.columns(2)
-                with _gb_side1:
+                with st.expander("Ground Beam Side View (Debugging)", expanded=False):
                     _fig_gb_side_x = plot_beam_side_view(
                         inputs['L_x'], ground_x['design_params']['h_beam'],
                         ground_x['rebar_string_top'], ground_x['rebar_steps_top'], ground_x['layer_top'],
@@ -1706,8 +1662,7 @@ def _render_ground_beam(results, inputs, common, beam_x, beam_y, columns, column
                         layer_min=ground_x['layer_min'],
                         dev_top=ground_x.get('dev_top'), dev_bot=ground_x.get('dev_bot'),
                         stirrup_zones=ground_x.get('stirrup_zones'))
-                    st.plotly_chart(_fig_gb_side_x, use_container_width=True, key="chart_gb_side_x")
-                with _gb_side2:
+                    st.pyplot(_fig_gb_side_x); plt.close(_fig_gb_side_x)
                     _fig_gb_side_y = plot_beam_side_view(
                         inputs['L_y'], ground_y['design_params']['h_beam'],
                         ground_y['rebar_string_top'], ground_y['rebar_steps_top'], ground_y['layer_top'],
@@ -1718,7 +1673,7 @@ def _render_ground_beam(results, inputs, common, beam_x, beam_y, columns, column
                         layer_min=ground_y['layer_min'],
                         dev_top=ground_y.get('dev_top'), dev_bot=ground_y.get('dev_bot'),
                         stirrup_zones=ground_y.get('stirrup_zones'))
-                    st.plotly_chart(_fig_gb_side_y, use_container_width=True, key="chart_gb_side_y")
+                    st.pyplot(_fig_gb_side_y); plt.close(_fig_gb_side_y)
 
             st.divider()
 
@@ -2001,7 +1956,7 @@ def _render_visualization(results, inputs, common, beam_x, beam_y, columns, colu
                 _fig_pm = plot_pm_diagram(
                     rebar_design=col_r['rebar_design'],
                     axial_moment=col_r['axial_moment'])
-                st.plotly_chart(_fig_pm, use_container_width=True, key=f"chart_pm_{_pm_tab_idx}")
+                st.plotly_chart(_fig_pm, width='stretch', key=f"chart_pm_{_pm_tab_idx}")
             with _col_pm2:
                 _rd = col_r['rebar_design']
                 _am = col_r['axial_moment']
@@ -2042,7 +1997,7 @@ def _render_visualization(results, inputs, common, beam_x, beam_y, columns, colu
     if rebar_render_btn:
         with st.spinner("3D 통합 배근도를 렌더링 중입니다... (잠시만 기다려주세요)"):
             fig_3d_rebar = plot_3d_frame_rebar(results, inputs)
-            st.plotly_chart(fig_3d_rebar, use_container_width=True, key="chart_3d_rebar")
+            st.plotly_chart(fig_3d_rebar, width='stretch', key="chart_3d_rebar")
 
 
 def _render_report_download(results, inputs):
@@ -2114,4 +2069,409 @@ def _render_todo(results, inputs, common, beam_x, beam_y, columns, column):
             st.warning("계획.md에서 '수정해야 하는 것들' 섹션을 찾을 수 없습니다.")
     else:
         st.warning(f"계획.md 파일을 찾을 수 없습니다: `{_plan_path}`")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 검토 모드 결과 렌더링
+# ═══════════════════════════════════════════════════════════════════════════
+
+def render_review_output_section(results):
+    """구조계산서 검토 모드 결과 표시."""
+    if not results or results.get('mode') != 'review':
+        return
+
+    st.header("📄 구조계산서 검토 결과")
+
+    fc_k = results.get('fc_k', 24.0)
+    fy = results.get('fy', 400.0)
+    st.caption(f"fck = {fc_k} MPa | fy = {fy} MPa")
+
+    # ── 전체 요약 테이블 ──
+    st.subheader("1. 검토 요약")
+    summary_rows = []
+    for bm in results.get('review_beams', []):
+        status = "✅ OK" if bm['ok_overall'] else "❌ NG"
+        # 대표 배근 (END-I 기준)
+        end_i = bm['locations'].get('END_I', {})
+        top = end_i.get('flexural_neg', {}).get('rebar_string', '-')
+        bot = end_i.get('flexural_pos', {}).get('rebar_string', '-')
+        s = end_i.get('shear', {}).get('s', '-')
+        summary_rows.append({
+            '부재': f"보 {bm['name']}",
+            '단면': f"{int(bm['b_beam'])}×{int(bm['h_beam'])}",
+            'TOP': top, 'BOT': bot, 'Stirrup': f"D10@{int(s)}" if isinstance(s, (int, float)) and s > 0 else '-',
+            '판정': status,
+        })
+    for col in results.get('review_columns', []):
+        status = "✅ OK" if col['ok_overall'] else "❌ NG"
+        rd = col.get('rebar_design', {})
+        summary_rows.append({
+            '부재': f"기둥 {col['name']}",
+            '단면': f"{int(col['c_column'])}×{int(col['c_column'])}",
+            'TOP': rd.get('rebar_string_col', '-'), 'BOT': '-',
+            'Stirrup': f"{col['tie_rebar_design']['tie_rebar_type']}@{col['tie_rebar_design']['tie_rebar_spacing']}" if 'tie_rebar_design' in col else '-',
+            '판정': status,
+        })
+
+    if summary_rows:
+        import pandas as _pd
+        st.dataframe(_pd.DataFrame(summary_rows), hide_index=True, width='stretch')
+
+    # ── 보 상세 ──
+    review_beams = results.get('review_beams', [])
+    if review_beams:
+        st.subheader("2. 보 검토 상세")
+        beam_tabs = st.tabs([f"보 {bm['name']}" for bm in review_beams])
+        for tab, bm in zip(beam_tabs, review_beams):
+            with tab:
+                _render_review_beam_detail(bm)
+
+    # ── 기둥 상세 ──
+    review_columns = results.get('review_columns', [])
+    if review_columns:
+        st.subheader("3. 기둥 검토 상세")
+        col_tabs = st.tabs([f"기둥 {col['name']}" for col in review_columns])
+        for tab, col_data in zip(col_tabs, review_columns):
+            with tab:
+                _render_review_column_detail(col_data)
+
+
+def _render_review_beam_detail(bm):
+    """보 1개의 MIDAS 스타일 검토 결과 상세."""
+    st.markdown(f"**{bm['name']}** — {int(bm['b_beam'])}×{int(bm['h_beam'])}mm | "
+                f"판정: {'✅ OK' if bm['ok_overall'] else '❌ NG'}")
+
+    end_i = bm['locations'].get('END_I', {})
+    mid = bm['locations'].get('MID', {})
+    end_j = bm['locations'].get('END_J', {})
+
+    def _get(loc, path, default=0):
+        """loc 딕셔너리에서 중첩 키 접근."""
+        parts = path.split('.')
+        v = loc
+        for p in parts:
+            if isinstance(v, dict):
+                v = v.get(p, {})
+            else:
+                return default
+        return v if v != {} else default
+
+    def _fmt(v, decimals=2):
+        if isinstance(v, (int, float)):
+            return f"{v:.{decimals}f}"
+        return str(v) if v else '-'
+
+    def _ratio_color(v):
+        """검토비 색상: >1.0 빨강, ≤1.0 파랑."""
+        try:
+            fv = float(v)
+            return 'color: red; font-weight: bold' if fv > 1.0 else 'color: blue'
+        except (ValueError, TypeError):
+            return ''
+
+    # ── 1. 단면도 (맨 위) ──
+    try:
+        from visualization import plot_rebar_section
+        top_i = _get(end_i, 'flexural_neg.rebar_string', '2-D13')
+        bot_i = _get(end_i, 'flexural_pos.rebar_string', '2-D13')
+        s_i = _get(end_i, 'shear.s', 200)
+        top_m = _get(mid, 'flexural_neg.rebar_string', '2-D13')
+        bot_m = _get(mid, 'flexural_pos.rebar_string', '2-D13')
+        s_m = _get(mid, 'shear.s', 200)
+        top_j = _get(end_j, 'flexural_neg.rebar_string', '2-D13')
+        bot_j = _get(end_j, 'flexural_pos.rebar_string', '2-D13')
+        s_j = _get(end_j, 'shear.s', 200)
+
+        _cover = float(bm.get('cover', 40))
+        _stir_str = bm.get('stirrup', '2-D10@125')
+        _stir_d = 9.53  # D10 기본
+
+        sections_data = [
+            {'title': '[END-I]', 'top': top_i, 'bot': bot_i, 'stirrup': _stir_str},
+            {'title': '[MID]',   'top': top_m, 'bot': bot_m, 'stirrup': _stir_str},
+            {'title': '[END-J]', 'top': top_j, 'bot': bot_j, 'stirrup': _stir_str},
+        ]
+        fig = plot_rebar_section_review(
+            bm['b_beam'], bm['h_beam'], sections_data,
+            cover=_cover, stirrup_d=_stir_d,
+            title_prefix=f"midas Gen RC Beam Section — {bm['name']}"
+        )
+        st.pyplot(fig); plt.close(fig)
+    except Exception as _e_rv_beam:
+        st.caption(f"⚠️ 보 단면도 렌더링 실패: {_e_rv_beam}")
+
+    # ── 2. Bending Moment Capacity (가로 비교 테이블) ──
+    st.markdown("#### 2. Bending Moment Capacity")
+
+    neg_i = end_i.get('flexural_neg', {})
+    neg_m = mid.get('flexural_neg', {})
+    neg_j = end_j.get('flexural_neg', {})
+    pos_i = end_i.get('flexural_pos', {})
+    pos_m = mid.get('flexural_pos', {})
+    pos_j = end_j.get('flexural_pos', {})
+
+    # (-) 부모멘트
+    neg_Mu_i = neg_i.get('Mu', 0)
+    neg_Mu_m = neg_m.get('Mu', 0)
+    neg_Mu_j = neg_j.get('Mu', 0)
+    neg_phiMn_i = neg_i.get('phi_Mn', 0)
+    neg_phiMn_m = neg_m.get('phi_Mn', 0)
+    neg_phiMn_j = neg_j.get('phi_Mn', 0)
+    neg_ratio_i = neg_Mu_i / neg_phiMn_i if neg_phiMn_i > 0 else 0
+    neg_ratio_m = neg_Mu_m / neg_phiMn_m if neg_phiMn_m > 0 else 0
+    neg_ratio_j = neg_Mu_j / neg_phiMn_j if neg_phiMn_j > 0 else 0
+
+    # (+) 정모멘트
+    pos_Mu_i = pos_i.get('Mu', 0)
+    pos_Mu_m = pos_m.get('Mu', 0)
+    pos_Mu_j = pos_j.get('Mu', 0)
+    pos_phiMn_i = pos_i.get('phi_Mn', 0)
+    pos_phiMn_m = pos_m.get('phi_Mn', 0)
+    pos_phiMn_j = pos_j.get('phi_Mn', 0)
+    pos_ratio_i = pos_Mu_i / pos_phiMn_i if pos_phiMn_i > 0 else 0
+    pos_ratio_m = pos_Mu_m / pos_phiMn_m if pos_phiMn_m > 0 else 0
+    pos_ratio_j = pos_Mu_j / pos_phiMn_j if pos_phiMn_j > 0 else 0
+
+    # As 배근
+    as_top_i = neg_i.get('rebar_string', '-')
+    as_top_m = neg_m.get('rebar_string', '-')
+    as_top_j = neg_j.get('rebar_string', '-')
+    as_bot_i = pos_i.get('rebar_string', '-')
+    as_bot_m = pos_m.get('rebar_string', '-')
+    as_bot_j = pos_j.get('rebar_string', '-')
+
+    bending_html = f"""
+    <table style="width:100%; border-collapse:collapse; font-size:14px; margin-bottom:20px;">
+    <thead>
+    <tr style="background:#2c3e50; color:white;">
+        <th style="padding:8px; text-align:left; width:40%"></th>
+        <th style="padding:8px; text-align:center;">END-I</th>
+        <th style="padding:8px; text-align:center;">MID</th>
+        <th style="padding:8px; text-align:center;">END-J</th>
+    </tr>
+    </thead>
+    <tbody>
+    <tr style="background:#f0f0f0;"><td style="padding:6px;" colspan="4"><b>(-) Negative Moment</b></td></tr>
+    <tr><td style="padding:6px;">Moment (Mu) [kN·m]</td>
+        <td style="text-align:center;">{_fmt(neg_Mu_i)}</td>
+        <td style="text-align:center;">{_fmt(neg_Mu_m)}</td>
+        <td style="text-align:center;">{_fmt(neg_Mu_j)}</td></tr>
+    <tr><td style="padding:6px;">Factored Strength (φMn) [kN·m]</td>
+        <td style="text-align:center;">{_fmt(neg_phiMn_i)}</td>
+        <td style="text-align:center;">{_fmt(neg_phiMn_m)}</td>
+        <td style="text-align:center;">{_fmt(neg_phiMn_j)}</td></tr>
+    <tr><td style="padding:6px;">Check Ratio (Mu/φMn)</td>
+        <td style="text-align:center; {_ratio_color(neg_ratio_i)}">{_fmt(neg_ratio_i, 4)}</td>
+        <td style="text-align:center; {_ratio_color(neg_ratio_m)}">{_fmt(neg_ratio_m, 4)}</td>
+        <td style="text-align:center; {_ratio_color(neg_ratio_j)}">{_fmt(neg_ratio_j, 4)}</td></tr>
+
+    <tr style="background:#f0f0f0;"><td style="padding:6px;" colspan="4"><b>(+) Positive Moment</b></td></tr>
+    <tr><td style="padding:6px;">Moment (Mu) [kN·m]</td>
+        <td style="text-align:center;">{_fmt(pos_Mu_i)}</td>
+        <td style="text-align:center;">{_fmt(pos_Mu_m)}</td>
+        <td style="text-align:center;">{_fmt(pos_Mu_j)}</td></tr>
+    <tr><td style="padding:6px;">Factored Strength (φMn) [kN·m]</td>
+        <td style="text-align:center;">{_fmt(pos_phiMn_i)}</td>
+        <td style="text-align:center;">{_fmt(pos_phiMn_m)}</td>
+        <td style="text-align:center;">{_fmt(pos_phiMn_j)}</td></tr>
+    <tr><td style="padding:6px;">Check Ratio (Mu/φMn)</td>
+        <td style="text-align:center; {_ratio_color(pos_ratio_i)}">{_fmt(pos_ratio_i, 4)}</td>
+        <td style="text-align:center; {_ratio_color(pos_ratio_m)}">{_fmt(pos_ratio_m, 4)}</td>
+        <td style="text-align:center; {_ratio_color(pos_ratio_j)}">{_fmt(pos_ratio_j, 4)}</td></tr>
+
+    <tr style="background:#f0f0f0;"><td style="padding:6px;" colspan="4"><b>Rebar</b></td></tr>
+    <tr><td style="padding:6px;">Using Rebar Top (As.top) [m²]</td>
+        <td style="text-align:center;">{_fmt(neg_i.get('As_provided', 0) / 1e6, 4)}</td>
+        <td style="text-align:center;">{_fmt(neg_m.get('As_provided', 0) / 1e6, 4)}</td>
+        <td style="text-align:center;">{_fmt(neg_j.get('As_provided', 0) / 1e6, 4)}</td></tr>
+    <tr><td style="padding:6px;">Using Rebar Bot (As.bot) [m²]</td>
+        <td style="text-align:center;">{_fmt(pos_i.get('As_provided', 0) / 1e6, 4)}</td>
+        <td style="text-align:center;">{_fmt(pos_m.get('As_provided', 0) / 1e6, 4)}</td>
+        <td style="text-align:center;">{_fmt(pos_j.get('As_provided', 0) / 1e6, 4)}</td></tr>
+    </tbody>
+    </table>
+    """
+    st.markdown(bending_html, unsafe_allow_html=True)
+
+    # ── 3. Shear Capacity (가로 비교 테이블) ──
+    st.markdown("#### 3. Shear Capacity")
+
+    sh_i = end_i.get('shear', {})
+    sh_m = mid.get('shear', {})
+    sh_j = end_j.get('shear', {})
+
+    vu_i = sh_i.get('Vu', 0)
+    vu_m = sh_m.get('Vu', 0)
+    vu_j = sh_j.get('Vu', 0)
+    phiVc_i = sh_i.get('phi_Vc', 0)
+    phiVc_m = sh_m.get('phi_Vc', 0)
+    phiVc_j = sh_j.get('phi_Vc', 0)
+    phiVs_i = sh_i.get('phi_Vs', 0)
+    phiVs_m = sh_m.get('phi_Vs', 0)
+    phiVs_j = sh_j.get('phi_Vs', 0)
+    s_i_val = sh_i.get('s', 0)
+    s_m_val = sh_m.get('s', 0)
+    s_j_val = sh_j.get('s', 0)
+    stir_str = bm.get('stirrup', '2-D10@125')
+    stir_i = stir_str if stir_str else '-'
+    stir_m = stir_str if stir_str else '-'
+    stir_j = stir_str if stir_str else '-'
+    # 구조계산서 스터럽 기반 AsV (Av/s × 1000 = mm²/m → /1e6 = m²/m)
+    # MIDAS는 AsV를 m²/m 단위로 표시 (1m당 전단철근 면적)
+    import re as _re_stir
+    _stir_m = _re_stir.match(r'(\d+)-D(\d+)\s*@\s*(\d+)', str(stir_str or ''))
+    if _stir_m:
+        _stir_n = int(_stir_m.group(1))
+        _stir_dnum = int(_stir_m.group(2))
+        _stir_s = float(_stir_m.group(3))
+        _stir_dia_map = {10: 9.53, 13: 12.7, 16: 15.9}
+        _stir_dia = _stir_dia_map.get(_stir_dnum, 9.53)
+        _Av_one = _stir_n * 3.14159 / 4.0 * _stir_dia ** 2  # mm²
+        _asv_per_m = _Av_one / _stir_s * 1000  # mm²/m
+    else:
+        _asv_per_m = 0.0
+    asv_i = _asv_per_m
+    asv_m = _asv_per_m
+    asv_j = _asv_per_m
+    vn_i = phiVc_i + phiVs_i
+    vn_m = phiVc_m + phiVs_m
+    vn_j = phiVc_j + phiVs_j
+    sh_ratio_i = vu_i / vn_i if vn_i > 0 else 0
+    sh_ratio_m = vu_m / vn_m if vn_m > 0 else 0
+    sh_ratio_j = vu_j / vn_j if vn_j > 0 else 0
+
+    shear_html = f"""
+    <table style="width:100%; border-collapse:collapse; font-size:14px; margin-bottom:20px;">
+    <thead>
+    <tr style="background:#2c3e50; color:white;">
+        <th style="padding:8px; text-align:left; width:40%"></th>
+        <th style="padding:8px; text-align:center;">END-I</th>
+        <th style="padding:8px; text-align:center;">MID</th>
+        <th style="padding:8px; text-align:center;">END-J</th>
+    </tr>
+    </thead>
+    <tbody>
+    <tr><td style="padding:6px;">Factored Shear Force (Vu) [kN]</td>
+        <td style="text-align:center;">{_fmt(vu_i)}</td>
+        <td style="text-align:center;">{_fmt(vu_m)}</td>
+        <td style="text-align:center;">{_fmt(vu_j)}</td></tr>
+    <tr><td style="padding:6px;">Shear Strength by Conc. (φVc) [kN]</td>
+        <td style="text-align:center;">{_fmt(phiVc_i)}</td>
+        <td style="text-align:center;">{_fmt(phiVc_m)}</td>
+        <td style="text-align:center;">{_fmt(phiVc_j)}</td></tr>
+    <tr><td style="padding:6px;">Shear Strength by Rebar (φVs) [kN]</td>
+        <td style="text-align:center;">{_fmt(phiVs_i)}</td>
+        <td style="text-align:center;">{_fmt(phiVs_m)}</td>
+        <td style="text-align:center;">{_fmt(phiVs_j)}</td></tr>
+    <tr><td style="padding:6px;">Using Shear Reinf. (AsV) [m²]</td>
+        <td style="text-align:center;">{_fmt(asv_i / 1e6, 4)}</td>
+        <td style="text-align:center;">{_fmt(asv_m / 1e6, 4)}</td>
+        <td style="text-align:center;">{_fmt(asv_j / 1e6, 4)}</td></tr>
+    <tr><td style="padding:6px;">Using Stirrups Spacing</td>
+        <td style="text-align:center;">{stir_i}</td>
+        <td style="text-align:center;">{stir_m}</td>
+        <td style="text-align:center;">{stir_j}</td></tr>
+    <tr><td style="padding:6px;">Check Ratio (Vu/(φVc+φVs))</td>
+        <td style="text-align:center; {_ratio_color(sh_ratio_i)}">{_fmt(sh_ratio_i, 4)}</td>
+        <td style="text-align:center; {_ratio_color(sh_ratio_m)}">{_fmt(sh_ratio_m, 4)}</td>
+        <td style="text-align:center; {_ratio_color(sh_ratio_j)}">{_fmt(sh_ratio_j, 4)}</td></tr>
+    </tbody>
+    </table>
+    """
+    st.markdown(shear_html, unsafe_allow_html=True)
+
+    # ── 경고 메시지 취합 ──
+    all_warnings = []
+    for loc_name in ['END_I', 'MID', 'END_J']:
+        loc = bm['locations'].get(loc_name, {})
+        for sub in ['flexural_neg', 'flexural_pos', 'shear']:
+            all_warnings.extend(loc.get(sub, {}).get('warnings', []))
+    for w in set(all_warnings):
+        if '오류' in w or 'NG' in w:
+            st.error(w)
+        elif '경고' in w:
+            st.warning(w)
+
+    # ── 검토 불가 항목 ──
+    na = bm.get('not_available', {})
+    if na:
+        _na_text = "\n".join([f"• **{key}**: {msg}" for key, msg in na.items()])
+        st.warning(f"**검토 불가 항목**\n\n{_na_text}")
+
+
+def _render_review_column_detail(col_data):
+    """기둥 1개의 검토 결과 상세."""
+    rd = col_data.get('rebar_design', {})
+    sl = col_data.get('slenderness', {})
+    tie = col_data.get('tie_rebar_design', {})
+
+    st.markdown(f"**{col_data['name']}** — {int(col_data['c_column'])}×{int(col_data['c_column'])}mm | "
+                f"판정: {'✅ OK' if col_data['ok_overall'] else '❌ NG'}")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("주철근", rd.get('rebar_string_col', '-'),
+                  delta="OK" if col_data.get('ok_pm') else "NG",
+                  delta_color="normal" if col_data.get('ok_pm') else "inverse")
+        st.caption(f"ρ = {rd.get('rho', 0):.3f} | φPn_max = {rd.get('phi_Pn_max', 0):.0f} kN")
+
+    with c2:
+        st.metric("세장비", f"λ = {sl.get('lambda_ratio', 0):.1f}",
+                  delta=sl.get('category', '-'),
+                  delta_color="normal" if sl.get('ok') else "inverse")
+        if sl.get('delta_ns') and sl['delta_ns'] > 1.0:
+            st.caption(f"δ_ns = {sl['delta_ns']:.2f} (모멘트 확대)")
+
+    with c3:
+        st.metric("띠철근", f"{tie.get('tie_rebar_type', '-')}@{tie.get('tie_rebar_spacing', '-')}")
+        st.caption(f"Pu = {col_data.get('Pu', 0):.0f} kN | Mu = {col_data.get('Mu', 0):.1f} kN·m")
+
+    # P-M 다이어그램 (검토 모드: rebar_design에 pm_curve가 있으면 표시)
+    if rd.get('pm_curve_P') is not None and rd.get('pm_curve_M') is not None:
+        try:
+            from visualization import plot_pm_diagram
+            # 검토 모드 결과를 설계 모드 형식으로 매핑
+            _rd_compat = dict(rd)
+            if 'Mu_design' not in _rd_compat:
+                _rd_compat['Mu_design'] = float(col_data.get('Mu', 0) or 0)
+            _am_compat = {'Pu': float(col_data.get('Pu', 0) or 0)}
+            fig_pm = plot_pm_diagram(_rd_compat, _am_compat)
+            st.plotly_chart(fig_pm, use_container_width=True, key=f"rv_pm_{col_data['name']}")
+        except Exception as _e_rv_pm:
+            st.caption(f"⚠️ P-M 다이어그램 렌더링 실패: {_e_rv_pm}")
+    else:
+        st.info("ℹ️ P-M 다이어그램: 검토 모드 P-M 곡선 데이터 미생성 (추후 구현 예정)")
+
+    # 기둥 단면도
+    if rd.get('rebar_string_col') and rd.get('n_col', 0) > 0:
+        try:
+            from visualization import plot_column_section
+            import re as _re_col
+            _col_stir = col_data.get('stirrup', '2-D10@125') or 'D10'
+            _m_stir = _re_col.match(r'D(\d+)', str(_col_stir))
+            _tie_dname = f"D{_m_stir.group(1)}" if _m_stir else 'D10'
+            _tie_dia_map = {'D10': 9.53, 'D13': 12.7}
+            _m_main = _re_col.match(r'.*D(\d+)', rd.get('rebar_string_col', 'D19'))
+            _main_dname = f"D{_m_main.group(1)}" if _m_main else 'D19'
+            _main_dia_map = {'D13': 12.7, 'D16': 15.9, 'D19': 19.1, 'D22': 22.2, 'D25': 25.4, 'D29': 28.6}
+            fig_sec = plot_column_section(
+                col_data['c_column'],
+                rd.get('n_col', 8),
+                _main_dname,
+                _main_dia_map.get(_main_dname, 19.1),
+                _tie_dname,
+                _tie_dia_map.get(_tie_dname, 9.53),
+                rd.get('tie_spacing', 200),
+            )
+            st.pyplot(fig_sec); plt.close(fig_sec)
+        except Exception as _e_rv_col:
+            st.caption(f"⚠️ 기둥 단면도 렌더링 실패: {_e_rv_col}")
+    else:
+        st.info("ℹ️ 기둥 단면도: 배근 정보 부족")
+
+    # 검토 불가 항목
+    na = col_data.get('not_available', {})
+    if na:
+        _na_text = "\n".join([f"• **{key}**: {msg}" for key, msg in na.items()])
+        st.warning(f"**검토 불가 항목**\n\n{_na_text}")
 

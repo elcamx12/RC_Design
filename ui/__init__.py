@@ -1,2 +1,2 @@
-from .input import render_input_section
-from .output import render_output_section
+from .input import render_input_section, render_review_input_section
+from .output import render_output_section, render_review_output_section

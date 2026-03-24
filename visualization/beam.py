@@ -1,8 +1,15 @@
-import plotly.graph_objects as go
+import plotly.graph_objects as go  # 3D용 유지
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+matplotlib.rcParams['font.family'] = ['NanumGothic', 'Malgun Gothic', 'sans-serif']
+matplotlib.rcParams['axes.unicode_minus'] = False
 
-def _draw_rebar_row(fig, b_beam, h_beam, y_center, rebar_string, rebar_steps, layer, color="Red", border_color="DarkRed"):
-    """보 단면도에서 한 줄의 철근을 그리는 내부 함수"""
+def _draw_rebar_row(ax, b_beam, h_beam, y_center, rebar_string, rebar_steps, layer,
+                    color="#CC0000", border_color="#990000", x_offset=0):
+    """보 단면도에서 한 줄의 철근을 그리는 내부 함수 (Matplotlib 버전)"""
     cover = rebar_steps['cover']
     stirrup_diameter = rebar_steps['rebar_specs']['D10']['diameter']
 
@@ -13,8 +20,9 @@ def _draw_rebar_row(fig, b_beam, h_beam, y_center, rebar_string, rebar_steps, la
         available_width = b_beam - 2 * (cover + stirrup_diameter + rebar_diameter / 2)
         spacing = available_width / (n - 1) if n > 1 else 0
         for i in range(n):
-            x_pos = (cover + stirrup_diameter + rebar_diameter / 2) + i * spacing if n > 1 else b_beam / 2
-            fig.add_shape(type="circle", x0=x_pos - rebar_diameter/2, y0=y_center - rebar_diameter/2, x1=x_pos + rebar_diameter/2, y1=y_center + rebar_diameter/2, fillcolor=color, line=dict(color=border_color, width=1))
+            x_pos = x_offset + (cover + stirrup_diameter + rebar_diameter / 2) + i * spacing if n > 1 else x_offset + b_beam / 2
+            ax.add_patch(mpatches.Circle((x_pos, y_center), rebar_diameter / 2,
+                         facecolor=color, edgecolor=border_color, linewidth=1))
     else:
         rebar_type = "D25"
         n = rebar_steps['fallback_n']
@@ -24,129 +32,205 @@ def _draw_rebar_row(fig, b_beam, h_beam, y_center, rebar_string, rebar_steps, la
         n2 = n - n1
         spacing1 = available_width / (n1 - 1) if n1 > 1 else 0
         for i in range(n1):
-            x_pos = (cover + stirrup_diameter + rebar_diameter / 2) + i * spacing1 if n1 > 1 else b_beam / 2
-            fig.add_shape(type="circle", x0=x_pos - rebar_diameter/2, y0=y_center - rebar_diameter/2, x1=x_pos + rebar_diameter/2, y1=y_center + rebar_diameter/2, fillcolor=color, line=dict(color=border_color, width=1))
+            x_pos = x_offset + (cover + stirrup_diameter + rebar_diameter / 2) + i * spacing1 if n1 > 1 else x_offset + b_beam / 2
+            ax.add_patch(mpatches.Circle((x_pos, y_center), rebar_diameter / 2,
+                         facecolor=color, edgecolor=border_color, linewidth=1))
         if n2 > 0:
             spacing2 = available_width / (n2 - 1) if n2 > 1 else 0
-            # [수정] h_beam 기준으로 상/하 방향 판별: y < h/2이면 하부근(위로), y > h/2이면 상부근(아래로)
             y_offset = y_center + (25 + rebar_diameter) if y_center < h_beam / 2 else y_center - (25 + rebar_diameter)
             for i in range(n2):
-                x_pos = (cover + stirrup_diameter + rebar_diameter / 2) + i * spacing2 if n2 > 1 else b_beam / 2
-                fig.add_shape(type="circle", x0=x_pos - rebar_diameter/2, y0=y_offset - rebar_diameter/2, x1=x_pos + rebar_diameter/2, y1=y_offset + rebar_diameter/2, fillcolor=color, line=dict(color=border_color, width=1))
+                x_pos = x_offset + (cover + stirrup_diameter + rebar_diameter / 2) + i * spacing2 if n2 > 1 else x_offset + b_beam / 2
+                ax.add_patch(mpatches.Circle((x_pos, y_offset), rebar_diameter / 2,
+                             facecolor=color, edgecolor=border_color, linewidth=1))
+
+def _draw_one_section(ax, x_off, b_beam, h_beam, rebar_str_top, rebar_str_bot,
+                      s_final_str, cover=40.0, stirrup_d=9.53, title='[END-I]'):
+    """단일 단면 1개를 ax 위에 그리는 공용 함수 (설계/검토 모드 모두 사용)."""
+    import re as _re
+    CLR_CONCRETE = '#D4F1F9'  # MIDAS 스타일 밝은 민트색
+    CLR_OUTLINE  = '#2255CC'
+    CLR_STIRRUP  = '#CC6600'
+    CLR_REBAR    = '#CC0000'
+    CLR_REBAR_BD = '#990000'
+    CLR_DIM      = '#444444'
+
+    _dia_map = {'D10': 9.53, 'D13': 12.7, 'D16': 15.9, 'D19': 19.1,
+                'D22': 22.2, 'D25': 25.4, 'D29': 28.6, 'D32': 31.8, 'D35': 35.8}
+
+    def _parse(rstr):
+        m = _re.match(r'(\d+)-D(\d+)', str(rstr or '2-D13').strip())
+        if not m: return 2, 'D13', 12.7
+        n, dkey = int(m.group(1)), f'D{m.group(2)}'
+        return n, dkey, _dia_map.get(dkey, 12.7)
+
+    n_bot, rtype_b, rdia_b = _parse(rebar_str_bot)
+    n_top, rtype_t, rdia_t = _parse(rebar_str_top)
+
+    loc_b = cover + stirrup_d + rdia_b / 2
+    loc_t = cover + stirrup_d + rdia_t / 2
+    y_t = h_beam - loc_t
+
+    # 1. 콘크리트
+    ax.add_patch(mpatches.Rectangle((x_off, 0), b_beam, h_beam,
+                 facecolor=CLR_CONCRETE, edgecolor=CLR_OUTLINE, linewidth=2.5))
+
+    # 2. 늑근 (주근 시각적 외경 감싸는 사각형)
+    _rv_b = rdia_b / 2.0 * 1.5  # 시각적 반지름 (1.5배)
+    _rv_t = rdia_t / 2.0 * 1.5
+    _stir_margin = 1.5  # 늑근과 철근 사이 여유
+    _stir_x0 = x_off + loc_b - _rv_b - _stir_margin
+    _stir_y0 = loc_b - _rv_b - _stir_margin
+    _stir_x1 = x_off + b_beam - loc_b + _rv_b + _stir_margin
+    _stir_y1 = h_beam - loc_t + _rv_t + _stir_margin
+    _stir_w = _stir_x1 - _stir_x0
+    _stir_h = _stir_y1 - _stir_y0
+    ax.add_patch(mpatches.Rectangle((_stir_x0, _stir_y0), _stir_w, _stir_h,
+                 facecolor='none', edgecolor=CLR_STIRRUP, linewidth=1.5))
+
+    # 3. 철근 그리기 (원형) — 실제 직경의 1.5배, 늑근 안쪽 배치
+    b_net = b_beam - 2 * loc_b
+    for _n, _y, _rdia in [(n_bot, loc_b, rdia_b), (n_top, y_t, rdia_t)]:
+        _r_visual = _rdia / 2.0 * 1.5  # 실제 반지름 × 1.5배
+        if _n <= 0: continue
+        # 철근 간격: 늑근 안쪽 기준
+        _inner_w = b_net  # 양쪽 loc 사이 거리
+        spacing = _inner_w / (_n - 1) if _n > 1 else 0
+        for _i in range(_n):
+            cx = x_off + loc_b + (_i * spacing if _n > 1 else _inner_w / 2)
+            ax.add_patch(mpatches.Circle((cx, _y), _r_visual,
+                         facecolor=CLR_REBAR, edgecolor=CLR_REBAR_BD, linewidth=0.8))
+
+    # 4. 치수선
+    _b_m = b_beam / 1000.0
+    _h_m = h_beam / 1000.0
+    _loc_b_m = loc_b / 1000.0
+    _loc_t_m = loc_t / 1000.0
+    _dot_r = 2.0
+    _dy = -20
+
+    # 하단 — 폭
+    ax.plot([x_off, x_off + b_beam], [_dy, _dy], color=CLR_DIM, linewidth=1)
+    for _xt in [x_off, x_off + b_beam]:
+        ax.plot([_xt, _xt], [_dy - 5, _dy + 5], color=CLR_DIM, linewidth=1)
+        ax.add_patch(mpatches.Circle((_xt, _dy), _dot_r, facecolor=CLR_DIM, edgecolor='none'))
+    ax.text(x_off + b_beam / 2, _dy - 12, f"{_b_m:.2f}",
+            fontsize=8, color=CLR_DIM, ha='center', va='top')
+
+    # 좌측 — Loc + 춤
+    _dx1 = x_off - 12
+    _dx2 = x_off - 40
+    _txt_gap = 14
+
+    ax.plot([_dx1, _dx1], [h_beam, y_t], color=CLR_DIM, linewidth=0.8)
+    for _yt in [h_beam, y_t]:
+        ax.plot([_dx1 - 3, _dx1 + 3], [_yt, _yt], color=CLR_DIM, linewidth=0.8)
+        ax.add_patch(mpatches.Circle((_dx1, _yt), _dot_r, facecolor=CLR_DIM, edgecolor='none'))
+    ax.text(_dx1 - _txt_gap, (h_beam + y_t) / 2, f"{_loc_t_m:.3f}",
+            fontsize=6, color=CLR_DIM, ha='center', va='center', rotation=90)
+
+    ax.plot([_dx2, _dx2], [0, h_beam], color=CLR_DIM, linewidth=1)
+    for _yt in [0, h_beam]:
+        ax.plot([_dx2 - 5, _dx2 + 5], [_yt, _yt], color=CLR_DIM, linewidth=1)
+        ax.add_patch(mpatches.Circle((_dx2, _yt), _dot_r, facecolor=CLR_DIM, edgecolor='none'))
+    ax.text(_dx2 - _txt_gap, h_beam / 2, f"{_h_m:.2f}",
+            fontsize=8, color=CLR_DIM, ha='center', va='center', rotation=90)
+
+    ax.plot([_dx1, _dx1], [0, loc_b], color=CLR_DIM, linewidth=0.8)
+    for _yt in [0, loc_b]:
+        ax.plot([_dx1 - 3, _dx1 + 3], [_yt, _yt], color=CLR_DIM, linewidth=0.8)
+        ax.add_patch(mpatches.Circle((_dx1, _yt), _dot_r, facecolor=CLR_DIM, edgecolor='none'))
+    ax.text(_dx1 - _txt_gap, loc_b / 2, f"{_loc_b_m:.3f}",
+            fontsize=6, color=CLR_DIM, ha='center', va='center', rotation=90)
+
+    # 5. 단면 제목
+    ax.text(x_off + b_beam / 2, h_beam + 20, title,
+            fontsize=10, color='black', ha='center', va='bottom', family='monospace')
+
+    # 6. 하단 텍스트 (배근 + 스터럽)
+    _info = [f"TOP   {n_top}-{rtype_t}", f"BOT   {n_bot}-{rtype_b}",
+             f"STIRRUPS  {s_final_str}"]
+    for _li, _lt in enumerate(_info):
+        ax.text(x_off + b_beam / 2, -55 - _li * 18, _lt,
+                fontsize=7, color='black', ha='center', va='top', family='monospace',
+                fontweight='bold')
+
 
 def plot_rebar_section(b_beam, h_beam, rebar_string_top, rebar_steps_top, layer_top,
                        rebar_string_bot, rebar_steps_bot, layer_bot, beam_type, s_final,
                        section_location='combined',
                        rebar_string_min=None, rebar_steps_min=None, layer_min=1):
-    """보 단면도를 실제 구조 도면 스타일로 렌더링합니다.
-
-    Args:
-        section_location : 'support' (지점부), 'midspan' (중앙부), 'combined' (전체)
-        rebar_string_min : 통일직경 2가닥 최소 배근 문자열 (e.g. "2-D25")
-        rebar_steps_min  : 최소 배근 rebar_steps dict
-        layer_min        : 최소 배근 층수 (항상 1)
-    """
-    fig = go.Figure()
+    """MIDAS Gen 스타일 보 단면도 — 설계 모드 (기존 호환)."""
     cover     = rebar_steps_bot['cover']
     stirrup_d = rebar_steps_bot['rebar_specs']['D10']['diameter']
 
-    # 색상 설정 (모든 철근 동일 색상)
-    color_bar, border_bar = 'Red', 'DarkRed'
-
-    if section_location == 'support':
-        title = f'{beam_type}보 지점부 단면 (M⁻)'
-    elif section_location == 'midspan':
-        title = f'{beam_type}보 중앙부 단면 (M⁺)'
+    # 3단면 설정
+    if section_location == 'combined' and rebar_string_min is not None:
+        sections = [('support', '[END-I]'), ('midspan', '[MID]'), ('support', '[END-J]')]
+    elif section_location == 'combined':
+        sections = [('combined', f'{beam_type}-Direction')]
     else:
-        title = f'{beam_type}방향 보 단면'
+        sections = [(section_location, '[END-I]' if section_location == 'support' else '[MID]')]
 
-    # --- 위치별 철근 선택 -----------------------------------------------
-    # support  : 상부 = M_neg 주근 / 하부 = 최소배근(통일직경 2가닥)
-    # midspan  : 상부 = 최소배근(통일직경 2가닥) / 하부 = M_pos 주근
-    # combined : 기존 동작 유지 (상부=M_neg, 하부=M_pos 모두 표시)
-    if section_location == 'support' and rebar_string_min is not None:
-        _str_bot,  _steps_bot,  _lyr_bot  = rebar_string_min, rebar_steps_min, layer_min
-        _str_top,  _steps_top,  _lyr_top  = rebar_string_top, rebar_steps_top, layer_top
-    elif section_location == 'midspan' and rebar_string_min is not None:
-        _str_bot,  _steps_bot,  _lyr_bot  = rebar_string_bot, rebar_steps_bot, layer_bot
-        _str_top,  _steps_top,  _lyr_top  = rebar_string_min, rebar_steps_min, layer_min
-    else:
-        _str_bot,  _steps_bot,  _lyr_bot  = rebar_string_bot, rebar_steps_bot, layer_bot
-        _str_top,  _steps_top,  _lyr_top  = rebar_string_top, rebar_steps_top, layer_top
+    n_sec = len(sections)
+    gap = b_beam * 0.5
+    total_w = n_sec * b_beam + (n_sec - 1) * gap
 
-    # --- 1. 콘크리트 단면 (회색 배경 + 두꺼운 외곽선) ---
-    fig.add_shape(type="rect", x0=0, y0=0, x1=b_beam, y1=h_beam,
-                  line=dict(color="#333333", width=3), fillcolor="#E0E0E0", opacity=0.8)
+    fig, ax = plt.subplots(1, 1, figsize=(max(6, 3 * n_sec), 5), dpi=200)
+    ax.set_aspect('equal')
+    ax.set_axis_off()
 
-    # --- 2. 늑근 (면 채우기 - 기둥 단면과 동일 스타일) ---
-    fig.add_shape(type="rect", x0=cover, y0=cover, x1=b_beam-cover, y1=cover+stirrup_d, fillcolor="DarkGreen", line=dict(width=0))
-    fig.add_shape(type="rect", x0=cover, y0=h_beam-cover-stirrup_d, x1=b_beam-cover, y1=h_beam-cover, fillcolor="DarkGreen", line=dict(width=0))
-    fig.add_shape(type="rect", x0=cover, y0=cover, x1=cover+stirrup_d, y1=h_beam-cover, fillcolor="DarkGreen", line=dict(width=0))
-    fig.add_shape(type="rect", x0=b_beam-cover-stirrup_d, y0=cover, x1=b_beam-cover, y1=h_beam-cover, fillcolor="DarkGreen", line=dict(width=0))
+    for _si, (_loc, _title) in enumerate(sections):
+        x_off = _si * (b_beam + gap)
+        if _loc == 'support' and rebar_string_min is not None:
+            _str_t, _str_b = rebar_string_top, rebar_string_min
+        elif _loc == 'midspan' and rebar_string_min is not None:
+            _str_t, _str_b = rebar_string_min, rebar_string_bot
+        else:
+            _str_t, _str_b = rebar_string_top, rebar_string_bot
 
-    # --- 3. 하부근 ---
-    rebar_type_bot     = _str_bot.split('-')[1] if _lyr_bot == 1 else "D25"
-    rebar_diameter_bot = _steps_bot['rebar_specs'][rebar_type_bot]['diameter']
-    y_bot = cover + stirrup_d + rebar_diameter_bot / 2
-    _draw_rebar_row(fig, b_beam, h_beam, y_bot, _str_bot, _steps_bot, _lyr_bot, color=color_bar, border_color=border_bar)
+        _draw_one_section(ax, x_off, b_beam, h_beam, _str_t, _str_b,
+                          f"2-D10 @{s_final:.0f}", cover=cover, stirrup_d=stirrup_d,
+                          title=_title)
 
-    # --- 4. 상부근 ---
-    rebar_type_top     = _str_top.split('-')[1] if _lyr_top == 1 else "D25"
-    rebar_diameter_top = _steps_top['rebar_specs'][rebar_type_top]['diameter']
-    y_top = h_beam - cover - stirrup_d - rebar_diameter_top / 2
-    _draw_rebar_row(fig, b_beam, h_beam, y_top, _str_top, _steps_top, _lyr_top, color=color_bar, border_color=border_bar)
+    ax.set_xlim(-80, total_w + 50)
+    ax.set_ylim(-120, h_beam + 40)
+    ax.set_title(f'midas Gen RC Beam Section  [{beam_type}-Dir]',
+                 fontsize=10, family='monospace', pad=10)
+    fig.tight_layout()
+    return fig
 
-    # --- 5. 치수선 (Engineering Style) ---
-    # 폭(b) 치수선 — 하단
-    dim_y = -30
-    tick_len = 8
-    fig.add_shape(type="line", x0=0, y0=dim_y, x1=b_beam, y1=dim_y, line=dict(color="black", width=1.5))
-    fig.add_shape(type="line", x0=0, y0=dim_y-tick_len, x1=0, y1=dim_y+tick_len, line=dict(color="black", width=1.5))
-    fig.add_shape(type="line", x0=b_beam, y0=dim_y-tick_len, x1=b_beam, y1=dim_y+tick_len, line=dict(color="black", width=1.5))
-    fig.add_annotation(x=b_beam/2, y=dim_y-18, text=f"b = {b_beam:.0f}", showarrow=False,
-                       font=dict(size=12, color="black"))
 
-    # 춤(h) 치수선 — 좌측
-    dim_x = -30
-    fig.add_shape(type="line", x0=dim_x, y0=0, x1=dim_x, y1=h_beam, line=dict(color="black", width=1.5))
-    fig.add_shape(type="line", x0=dim_x-tick_len, y0=0, x1=dim_x+tick_len, y1=0, line=dict(color="black", width=1.5))
-    fig.add_shape(type="line", x0=dim_x-tick_len, y0=h_beam, x1=dim_x+tick_len, y1=h_beam, line=dict(color="black", width=1.5))
-    fig.add_annotation(x=dim_x-20, y=h_beam/2, text=f"h = {h_beam:.0f}", showarrow=False, textangle=-90,
-                       font=dict(size=12, color="black"))
+def plot_rebar_section_review(b_beam, h_beam, sections_data, cover=40.0, stirrup_d=9.53,
+                               title_prefix='RC Beam Section'):
+    """검토 모드 보 단면도 — END-I/MID/END-J 각각 독립 배근.
 
-    # --- 6. 지시선 (Annotations) ---
-    n_bot_info = _steps_bot[f'n_final_{rebar_type_bot}'] if _lyr_bot == 1 else _steps_bot['fallback_n']
-    n_top_info = _steps_top[f'n_final_{rebar_type_top}'] if _lyr_top == 1 else _steps_top['fallback_n']
+    Args:
+        sections_data: [
+            {'title': '[END-I]', 'top': '3-D19', 'bot': '3-D19', 'stirrup': '2-D10@125'},
+            {'title': '[MID]',   'top': '3-D19', 'bot': '3-D19', 'stirrup': '2-D10@125'},
+            {'title': '[END-J]', 'top': '3-D19', 'bot': '3-D19', 'stirrup': '2-D10@125'},
+        ]
+    """
+    n_sec = len(sections_data)
+    gap = b_beam * 0.5
+    total_w = n_sec * b_beam + (n_sec - 1) * gap
 
-    # 하부근 레이블
-    bot_label = f"{n_bot_info}-{rebar_type_bot}"
-    if   section_location == 'midspan': bot_label += " (주근)"
-    elif section_location == 'support': bot_label += " (최소)"
-    fig.add_annotation(x=b_beam + 10, y=y_bot, text=bot_label,
-                       showarrow=True, arrowhead=2, ax=60, ay=0,
-                       font=dict(size=11, color=border_bar))
+    fig, ax = plt.subplots(1, 1, figsize=(max(6, 3 * n_sec), 5), dpi=200)
+    ax.set_aspect('equal')
+    ax.set_axis_off()
 
-    # 상부근 레이블
-    top_label = f"{n_top_info}-{rebar_type_top}"
-    if   section_location == 'support':  top_label += " (주근)"
-    elif section_location == 'midspan':  top_label += " (최소)"
-    fig.add_annotation(x=b_beam + 10, y=y_top, text=top_label,
-                       showarrow=True, arrowhead=2, ax=60, ay=0,
-                       font=dict(size=11, color=border_bar))
+    for _si, sec in enumerate(sections_data):
+        x_off = _si * (b_beam + gap)
+        _draw_one_section(ax, x_off, b_beam, h_beam,
+                          sec.get('top', '2-D13'), sec.get('bot', '2-D13'),
+                          sec.get('stirrup', '-'),
+                          cover=cover, stirrup_d=stirrup_d,
+                          title=sec.get('title', f'[{_si}]'))
 
-    # 늑근 레이블
-    fig.add_annotation(x=cover, y=h_beam-cover, text=f"D10@{s_final:.0f}",
-                       showarrow=True, arrowhead=2, ax=-55, ay=-25,
-                       font=dict(size=10, color="#2E7D32"))
-
-    fig.update_layout(
-        title=dict(text=title, font=dict(size=13)),
-        xaxis=dict(visible=False, range=[-80, b_beam + 160]),
-        yaxis=dict(visible=False, range=[-70, h_beam + 40], scaleanchor="x"),
-        width=420, height=420,
-        plot_bgcolor='white', paper_bgcolor='white',
-        margin=dict(l=20, r=20, t=40, b=20)
-    )
+    ax.set_xlim(-80, total_w + 50)
+    ax.set_ylim(-120, h_beam + 40)
+    ax.set_title(title_prefix, fontsize=10, family='monospace', pad=10)
+    fig.tight_layout()
     return fig
 
 def plot_beam_side_view(L_beam, h_beam, rebar_string_top, rebar_steps_top, layer_top,
@@ -164,143 +248,146 @@ def plot_beam_side_view(L_beam, h_beam, rebar_string_top, rebar_steps_top, layer
     dev_top/dev_bot: 정착길이 dict (ld, ls_B 등) — 이음 구간 표시용
     stirrup_zones: 늑근 구간 분할 리스트 — 구간별 간격 표시용
     """
-    fig = go.Figure()
+    fig, ax = plt.subplots(1, 1, figsize=(10, 4), dpi=200)
+    ax.set_aspect('equal')
+    ax.set_axis_off()
+
     # 1. 콘크리트
-    fig.add_shape(type="rect", x0=0, y0=0, x1=L_beam, y1=h_beam,
-                  line=dict(color="#333333", width=3), fillcolor="#E0E0E0", opacity=0.8)
+    ax.add_patch(mpatches.Rectangle((0, 0), L_beam, h_beam,
+                 facecolor='#D6EAF8', edgecolor='#222222', linewidth=2.5))
 
     cover = rebar_steps_bot['cover']
     stirrup_diameter = rebar_steps_bot['rebar_specs']['D10']['diameter']
-
-    # 지점부 구간 길이 (경간의 1/4)
     L_zone = L_beam / 4
 
-    # 2. 하부근 (M⁺ 저항)
+    # 2. 하부근
     rebar_type_bot = rebar_string_bot.split('-')[1] if layer_bot == 1 else "D25"
     rebar_diameter_bot = rebar_steps_bot['rebar_specs'][rebar_type_bot]['diameter']
     y_bot = cover + stirrup_diameter + rebar_diameter_bot / 2
 
     if rebar_string_min is not None:
-        # 중앙부(L/4~3L/4): M_pos 주근 — Red
-        fig.add_shape(type="rect", x0=L_zone, y0=y_bot - rebar_diameter_bot/2,
-                      x1=L_beam - L_zone, y1=y_bot + rebar_diameter_bot/2,
-                      fillcolor="Red", line=dict(width=0))
-        # 지점부(0~L/4, 3L/4~L): 최소근 — 연한 빨강
+        ax.add_patch(mpatches.Rectangle((L_zone, y_bot - rebar_diameter_bot/2), L_beam - 2*L_zone, rebar_diameter_bot,
+                     facecolor='#333333', edgecolor='none'))
         for x0, x1 in [(0, L_zone), (L_beam - L_zone, L_beam)]:
-            fig.add_shape(type="rect", x0=x0, y0=y_bot - rebar_diameter_bot/2,
-                          x1=x1, y1=y_bot + rebar_diameter_bot/2,
-                          fillcolor="#FFAAAA", line=dict(width=0))
+            ax.add_patch(mpatches.Rectangle((x0, y_bot - rebar_diameter_bot/2), x1-x0, rebar_diameter_bot,
+                         facecolor='#888888', edgecolor='none'))
     else:
-        fig.add_shape(type="rect", x0=0, y0=y_bot - rebar_diameter_bot/2,
-                      x1=L_beam, y1=y_bot + rebar_diameter_bot/2,
-                      fillcolor="Red", line=dict(width=0))
+        ax.add_patch(mpatches.Rectangle((0, y_bot - rebar_diameter_bot/2), L_beam, rebar_diameter_bot,
+                     facecolor='#333333', edgecolor='none'))
         if layer_bot == 2:
             y_bot2 = y_bot + rebar_diameter_bot + 25
-            fig.add_shape(type="rect", x0=0, y0=y_bot2 - rebar_diameter_bot/2,
-                          x1=L_beam, y1=y_bot2 + rebar_diameter_bot/2,
-                          fillcolor="Red", line=dict(width=0))
+            ax.add_patch(mpatches.Rectangle((0, y_bot2 - rebar_diameter_bot/2), L_beam, rebar_diameter_bot,
+                         facecolor='#333333', edgecolor='none'))
 
-    # 3. 상부근 (M⁻ 저항)
+    # 3. 상부근
     rebar_type_top = rebar_string_top.split('-')[1] if layer_top == 1 else "D25"
     rebar_diameter_top = rebar_steps_top['rebar_specs'][rebar_type_top]['diameter']
     y_top = h_beam - cover - stirrup_diameter - rebar_diameter_top / 2
 
     if rebar_string_min is not None:
-        # 지점부(0~L/4, 3L/4~L): M_neg 주근 — OrangeRed
         for x0, x1 in [(0, L_zone), (L_beam - L_zone, L_beam)]:
-            fig.add_shape(type="rect", x0=x0, y0=y_top - rebar_diameter_top/2,
-                          x1=x1, y1=y_top + rebar_diameter_top/2,
-                          fillcolor="OrangeRed", line=dict(width=0))
-        # 중앙부(L/4~3L/4): 최소근 — 연한 주황
-        fig.add_shape(type="rect", x0=L_zone, y0=y_top - rebar_diameter_top/2,
-                      x1=L_beam - L_zone, y1=y_top + rebar_diameter_top/2,
-                      fillcolor="#FFCCAA", line=dict(width=0))
+            ax.add_patch(mpatches.Rectangle((x0, y_top - rebar_diameter_top/2), x1-x0, rebar_diameter_top,
+                         facecolor='#333333', edgecolor='none'))
+        ax.add_patch(mpatches.Rectangle((L_zone, y_top - rebar_diameter_top/2), L_beam - 2*L_zone, rebar_diameter_top,
+                     facecolor='#888888', edgecolor='none'))
     else:
-        fig.add_shape(type="rect", x0=0, y0=y_top - rebar_diameter_top/2,
-                      x1=L_beam, y1=y_top + rebar_diameter_top/2,
-                      fillcolor="OrangeRed", line=dict(width=0))
+        ax.add_patch(mpatches.Rectangle((0, y_top - rebar_diameter_top/2), L_beam, rebar_diameter_top,
+                     facecolor='#333333', edgecolor='none'))
         if layer_top == 2:
             y_top2 = y_top - rebar_diameter_top - 25
-            fig.add_shape(type="rect", x0=0, y0=y_top2 - rebar_diameter_top/2,
-                          x1=L_beam, y1=y_top2 + rebar_diameter_top/2,
-                          fillcolor="OrangeRed", line=dict(width=0))
+            ax.add_patch(mpatches.Rectangle((0, y_top2 - rebar_diameter_top/2), L_beam, rebar_diameter_top,
+                         facecolor='#333333', edgecolor='none'))
 
-    # 4. 늑근 — stirrup_zones가 있으면 구간별 간격, 없으면 s_final 균일
+    # 4. 늑근
     if stirrup_zones and len(stirrup_zones) > 1:
-        for _sz in stirrup_zones:
-            _sx0 = _sz['x_start'] * 1000  # m → mm
+        _L_m = L_beam / 1000.0
+        _all_zones = list(stirrup_zones)
+        _last_end = max(z['x_end'] for z in stirrup_zones)
+        if _last_end < _L_m * 0.9:
+            for _sz in reversed(stirrup_zones):
+                _all_zones.append({'x_start': _L_m - _sz['x_end'], 'x_end': _L_m - _sz['x_start'], 's': _sz['s']})
+        for _sz in _all_zones:
+            _sx0 = _sz['x_start'] * 1000
             _sx1 = _sz['x_end'] * 1000
-            _s_z = _sz['s']
             x_pos = _sx0 + 50
             while x_pos < _sx1 - 10:
                 if 50 <= x_pos <= L_beam - 50:
-                    fig.add_shape(type="rect", x0=x_pos-stirrup_diameter/2, y0=cover,
-                                  x1=x_pos+stirrup_diameter/2, y1=h_beam-cover,
-                                  fillcolor="DarkGreen", line=dict(width=0))
-                x_pos += _s_z
+                    ax.add_patch(mpatches.Rectangle((x_pos - stirrup_diameter/2, cover), stirrup_diameter, h_beam - 2*cover,
+                                 facecolor='#555555', edgecolor='none'))
+                x_pos += _sz['s']
     else:
-        num_stirrups = int(L_beam / s_final)
+        num_stirrups = int(L_beam / s_final) if s_final > 0 else 0
         for i in range(num_stirrups + 1):
             x_pos = 50 + i * s_final
-            if x_pos > L_beam - 50: break
-            fig.add_shape(type="rect", x0=x_pos-stirrup_diameter/2, y0=cover,
-                          x1=x_pos+stirrup_diameter/2, y1=h_beam-cover,
-                          fillcolor="DarkGreen", line=dict(width=0))
+            if x_pos > L_beam - 50:
+                break
+            ax.add_patch(mpatches.Rectangle((x_pos - stirrup_diameter/2, cover), stirrup_diameter, h_beam - 2*cover,
+                         facecolor='#555555', edgecolor='none'))
 
-    # 5. 구간 경계선 (rebar_string_min 있을 때만)
+    # 5. 구간 경계선
     if rebar_string_min is not None:
         for x_div in [L_zone, L_beam - L_zone]:
-            fig.add_shape(type="line", x0=x_div, y0=0, x1=x_div, y1=h_beam,
-                          line=dict(color="#888888", width=1, dash="dot"))
+            ax.plot([x_div, x_div], [0, h_beam], color='#888888', linewidth=0.8, linestyle=':')
 
-    # 6. 이음 구간 표시 (정착길이/겹이음)
+    # 6. 이음 구간
     if dev_top is not None and dev_top.get('ls_B'):
         _ls_top = dev_top['ls_B']
-        # 상부근 이음: 지점부 끝에서 중앙부 방향으로 ls_B 구간
         for _x_sp in [L_zone, L_beam - L_zone]:
-            _x0_sp = _x_sp - _ls_top / 2
-            _x1_sp = _x_sp + _ls_top / 2
-            fig.add_shape(type="rect", x0=_x0_sp, y0=y_top - rebar_diameter_top,
-                          x1=_x1_sp, y1=y_top + rebar_diameter_top,
-                          fillcolor="rgba(128,0,255,0.2)", line=dict(color="purple", width=1, dash="dot"))
-        fig.add_annotation(x=L_zone, y=y_top + rebar_diameter_top + 15,
-                           text=f"이음 {_ls_top:.0f}", showarrow=False,
-                           font=dict(size=8, color="purple"))
+            _x0_ext = _x_sp if _x_sp == L_zone else _x_sp - _ls_top
+            _x1_ext = _x_sp + _ls_top if _x_sp == L_zone else _x_sp
+            ax.add_patch(mpatches.Rectangle((_x0_ext, y_top - rebar_diameter_top/2 - 1), _x1_ext - _x0_ext, rebar_diameter_top + 2,
+                         facecolor='#333333', edgecolor='none', alpha=0.7))
+        ax.text(L_zone + _ls_top/2, y_top + rebar_diameter_top + 12, f"ls={_ls_top:.0f}",
+                fontsize=6, color='#666666', ha='center', va='center')
 
     if dev_bot is not None and dev_bot.get('ls_B'):
         _ls_bot = dev_bot['ls_B']
         for _x_sp in [L_zone, L_beam - L_zone]:
-            _x0_sp = _x_sp - _ls_bot / 2
-            _x1_sp = _x_sp + _ls_bot / 2
-            fig.add_shape(type="rect", x0=_x0_sp, y0=y_bot - rebar_diameter_bot,
-                          x1=_x1_sp, y1=y_bot + rebar_diameter_bot,
-                          fillcolor="rgba(255,0,128,0.2)", line=dict(color="deeppink", width=1, dash="dot"))
-        fig.add_annotation(x=L_zone, y=y_bot - rebar_diameter_bot - 15,
-                           text=f"이음 {_ls_bot:.0f}", showarrow=False,
-                           font=dict(size=8, color="deeppink"))
+            _x0_ext = _x_sp - _ls_bot if _x_sp == L_zone else _x_sp
+            _x1_ext = _x_sp if _x_sp == L_zone else _x_sp + _ls_bot
+            ax.add_patch(mpatches.Rectangle((_x0_ext, y_bot - rebar_diameter_bot/2 - 1), _x1_ext - _x0_ext, rebar_diameter_bot + 2,
+                         facecolor='#333333', edgecolor='none', alpha=0.7))
+        ax.text(L_zone - _ls_bot/2, y_bot - rebar_diameter_bot - 12, f"ls={_ls_bot:.0f}",
+                fontsize=6, color='#666666', ha='center', va='center')
 
-    # 7. 늑근 구간 표시 (stirrup_zones 전달 시)
+    # 7. 늑근 구간 표시
     if stirrup_zones and len(stirrup_zones) > 1:
         _sz_y = h_beam + 30
-        for _sz in stirrup_zones:
-            _sx0 = _sz['x_start'] * 1000  # m → mm
+        _L_m = L_beam / 1000.0
+        _disp_zones = list(stirrup_zones)
+        _last_end = max(z['x_end'] for z in stirrup_zones)
+        if _last_end < _L_m * 0.9:
+            for _sz in reversed(stirrup_zones):
+                _disp_zones.append({'x_start': _L_m - _sz['x_end'], 'x_end': _L_m - _sz['x_start'], 's': _sz['s']})
+        for _sz in _disp_zones:
+            _sx0 = _sz['x_start'] * 1000
             _sx1 = _sz['x_end'] * 1000
-            fig.add_shape(type="line", x0=_sx0, y0=_sz_y, x1=_sx1, y1=_sz_y,
-                          line=dict(color="green", width=2))
-            fig.add_annotation(
-                x=(_sx0 + _sx1) / 2, y=_sz_y + 20,
-                text=f"D10@{_sz['s']:.0f}", showarrow=False,
-                font=dict(size=7, color="green"))
+            ax.plot([_sx0, _sx1], [_sz_y, _sz_y], color='#555555', linewidth=2)
+            ax.text((_sx0 + _sx1)/2, _sz_y + 20, f"D10@{_sz['s']:.0f}",
+                    fontsize=5, color='#555555', ha='center', va='center')
 
-    # 치수선
-    _y_dim = -190 if not stirrup_zones else -190
-    fig.add_annotation(x=L_beam/2, y=-190, text=f"L = {L_beam:.0f}", showarrow=False, font=dict(size=14, color="black"))
-    fig.add_shape(type="line", x0=0, y0=-150, x1=L_beam, y1=-150, line=dict(color="black", width=1))
-    fig.add_annotation(x=-250, y=h_beam/2, text=f"h = {h_beam:.0f}", showarrow=False, textangle=-90, font=dict(size=14, color="black"))
-    fig.add_shape(type="line", x0=-200, y0=0, x1=-200, y1=h_beam, line=dict(color="black", width=1))
+    # 8. 지점 삼각형
+    tri_h = 80
+    tri_w = 60
+    for x_support in [0, L_beam]:
+        tri = plt.Polygon([[x_support, 0], [x_support - tri_w, -tri_h], [x_support + tri_w, -tri_h]],
+                          facecolor='#cccccc', edgecolor='#333333', linewidth=1.5, alpha=0.5)
+        ax.add_patch(tri)
+        for _hi in range(4):
+            _hx0 = x_support - tri_w - 10 + _hi * 20
+            ax.plot([_hx0, _hx0 - 15], [-tri_h, -tri_h - 15], color='#666666', linewidth=0.8)
 
-    _y_range_max = h_beam + 100 if not stirrup_zones else h_beam + 80 + len(stirrup_zones) * 20
-    fig.update_layout(title=f'{beam_type}방향 보 측면', xaxis=dict(visible=False, range=[-400, L_beam+200]), yaxis=dict(visible=False, range=[-300, _y_range_max]), width=700, height=350)
+    # 9. 치수선
+    ax.text(L_beam/2, -190, f"L = {L_beam:.0f}", fontsize=10, color='black', ha='center', va='center')
+    ax.plot([0, L_beam], [-150, -150], color='black', linewidth=1)
+    ax.text(-250, h_beam/2, f"h = {h_beam:.0f}", fontsize=10, color='black', ha='center', va='center', rotation=90)
+    ax.plot([-200, -200], [0, h_beam], color='black', linewidth=1)
+
+    _y_max = h_beam + 100 if not stirrup_zones else h_beam + 80 + len(stirrup_zones) * 20
+    ax.set_xlim(-400, L_beam + 200)
+    ax.set_ylim(-300, _y_max)
+    ax.set_title(f'Beam Side View  [{beam_type}-Dir]', fontsize=10, family='monospace')
+    fig.tight_layout()
     return fig
 
 def plot_rebar_3d(L_beam, b_beam, h_beam, rebar_string, s_final, rebar_steps, beam_type):
@@ -349,18 +436,18 @@ def plot_rebar_3d(L_beam, b_beam, h_beam, rebar_string, s_final, rebar_steps, be
         sp = avail_w / (n_total - 1) if n_total > 1 else 0
         for i in range(n_total):
             y = y_base + i*sp if n_total > 1 else b_beam/2
-            fig.add_trace(create_cylinder(0, L_beam, y, z_base, rebar_d/2, 'Red'))
+            fig.add_trace(create_cylinder(0, L_beam, y, z_base, rebar_d/2, '#333333'))
     else:
         n1 = n_total // 2 + (n_total % 2)
         n2 = n_total - n1
         sp1 = avail_w / (n1 - 1) if n1 > 1 else 0
         for i in range(n1):
             y = y_base + i*sp1 if n1 > 1 else b_beam/2
-            fig.add_trace(create_cylinder(0, L_beam, y, z_base, rebar_d/2, 'Red'))
+            fig.add_trace(create_cylinder(0, L_beam, y, z_base, rebar_d/2, '#333333'))
         sp2 = avail_w / (n2 - 1) if n2 > 1 else 0
         for i in range(n2):
             y = y_base + i*sp2 if n2 > 1 else b_beam/2
-            fig.add_trace(create_cylinder(0, L_beam, y, z_base + rebar_d + 25, rebar_d/2, 'Red'))
+            fig.add_trace(create_cylinder(0, L_beam, y, z_base + rebar_d + 25, rebar_d/2, '#333333'))
 
     # 3. 늑근 (Hollow Box)
     def add_box(x0, x1, y0, y1, z0, z1, vx, vy, vz, ii, jj, kk):
@@ -375,7 +462,7 @@ def plot_rebar_3d(L_beam, b_beam, h_beam, rebar_string, s_final, rebar_steps, be
         jj.extend([off+v for v in faces_j])
         kk.extend([off+v for v in faces_k])
 
-    num_s = int(L_beam / s_final)
+    num_s = int(L_beam / s_final) if s_final > 0 else 0
     for i in range(num_s + 1):
         x = 50 + i * s_final
         if x > L_beam - 50: break
@@ -393,7 +480,7 @@ def plot_rebar_3d(L_beam, b_beam, h_beam, rebar_string, s_final, rebar_steps, be
 
         fig.add_trace(go.Mesh3d(x=vx, y=vy, z=vz, i=ii, j=jj, k=kk, color='DarkGreen', opacity=0.8))
 
-    fig.update_layout(title=f'{beam_type}방향 3D 배근', scene=dict(aspectmode='data', xaxis=dict(visible=False), yaxis=dict(visible=False), zaxis=dict(visible=False)), width=600, height=400)
+    fig.update_layout(title=f'Beam 3D Rebar [{beam_type}-Dir]', scene=dict(aspectmode='data', xaxis=dict(visible=False), yaxis=dict(visible=False), zaxis=dict(visible=False)), width=600, height=400)
     return fig
 
 def plot_sfd_bmd(member_forces, beam_type):
@@ -401,7 +488,7 @@ def plot_sfd_bmd(member_forces, beam_type):
     fig.add_trace(go.Scatter(x=member_forces['x_steps'], y=member_forces['SFD'], mode='lines', name='SFD (kN)', line=dict(color='blue', width=2)))
     fig.add_trace(go.Scatter(x=member_forces['x_steps'], y=member_forces['BMD'], mode='lines', name='BMD (kN·m)', line=dict(color='red', width=2)))
     fig.update_layout(
-        title=f'{beam_type}방향 보 SFD & BMD',
+        title=f'Beam SFD & BMD [{beam_type}-Dir]',
         xaxis_title='위치 (m)',
         yaxis_title='힘 (kN) / 모멘트 (kN·m)',
         height=400,

@@ -1,22 +1,35 @@
-import plotly.graph_objects as go
+import matplotlib
+matplotlib.use('Agg')  # Streamlit 호환 백엔드
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+matplotlib.rcParams['font.family'] = ['NanumGothic', 'Malgun Gothic', 'sans-serif']
+matplotlib.rcParams['axes.unicode_minus'] = False
 import numpy as np
 
 def plot_slab_section(t_slab, rebar_string_top, rebar_string_bot,
-                      rebar_string_dist=None, cover=20.0):
+                      rebar_string_dist=None, cover=20.0,
+                      fck=24.0, fy=400.0):
     """
-    1m 폭 슬래브 단면 (1000mm × t_slab) 렌더링.
-    "D10@200" 형태의 배근 문자열에서 간격을 파싱하여 철근 위치 배치.
+    1m 폭 슬래브 단면 (1000mm × t_slab) — Matplotlib PNG 렌더링.
+    비율 완벽 유지, 브라우저 리사이즈 영향 없음.
     """
-    fig = go.Figure()
     b = 1000.0  # mm
     h = t_slab
 
-    # 콘크리트 단면
-    fig.add_shape(type='rect', x0=-b/2, y0=0, x1=b/2, y1=h,
-                  fillcolor='rgba(200,200,200,0.3)', line=dict(color='gray', width=2))
+    # ── 색상 팔레트 ──
+    CLR_OUTLINE = '#222222'
+    CLR_CONCRETE = '#E8E8E8'
+    CLR_HATCH = '#CCCCCC'
+    CLR_REBAR = '#1a1a1a'
+    CLR_REBAR_LINE = '#000000'
+    CLR_DIM = '#444444'
+    CLR_DIM_D = '#888888'
+    CLR_DIST = '#555555'
+    CLR_LABEL = '#333333'
+
+    REBAR_SCALE = 3.5
 
     def _parse_rebar(rb_str):
-        """'D10@200' → (diameter, spacing, n_bars_in_1m)"""
         if rb_str is None or '@' not in rb_str:
             return None, None, 0
         parts = rb_str.split('@')
@@ -27,76 +40,127 @@ def plot_slab_section(t_slab, rebar_string_top, rebar_string_bot,
         n = int(np.floor(b / spacing))
         return diameter, spacing, n
 
-    def _draw_bars(y_center, rb_str, color, label):
-        d, s, n = _parse_rebar(rb_str)
-        if n <= 0:
-            return
-        # 첫 철근 위치: -b/2 + s/2, 이후 s 간격
-        x_start = -b/2 + s/2
-        xs = [x_start + i * s for i in range(n)]
-        ys = [y_center] * n
-        fig.add_trace(go.Scatter(
-            x=xs, y=ys, mode='markers',
-            marker=dict(size=max(d * 0.8, 6), color=color,
-                        line=dict(color='black', width=1)),
-            name=f'{label} ({rb_str})', hoverinfo='name'
-        ))
+    # ── Figure 생성 ──
+    fig, ax = plt.subplots(1, 1, figsize=(10, 5), dpi=150)
+    ax.set_aspect('equal')
+    ax.set_axis_off()
 
-    # 하부근 (M_pos)
-    _db_bot = _parse_rebar(rebar_string_bot)[0] or 9.53
+    # --- 1. 콘크리트 단면 ---
+    ax.add_patch(patches.Rectangle((0, 0), b, h,
+                 facecolor=CLR_CONCRETE, edgecolor=CLR_OUTLINE, linewidth=2.5))
+
+    # 사선 해칭 (45도)
+    _hatch_sp = max(12, h / 10)
+    for _hi in np.arange(-b - h, b + h, _hatch_sp):
+        _x0 = max(0, _hi)
+        _y0 = max(0, -_hi)
+        _x1 = min(b, _hi + h)
+        _y1 = min(h, h - _hi)
+        if _x0 < b and _x1 > 0 and _y0 < h and _y1 > 0:
+            ax.plot([_x0, _x1], [_y0, _y1], color=CLR_HATCH, linewidth=0.4)
+
+    # --- 2. 하부근 (B1) ---
+    _db_bot, _s_bot, _n_bot = _parse_rebar(rebar_string_bot)
+    _db_bot = _db_bot or 9.53
+    _draw_bot = _db_bot * REBAR_SCALE
     y_bot = cover + _db_bot / 2.0
-    _draw_bars(y_bot, rebar_string_bot, 'red', '하부근')
+    if _n_bot > 0:
+        x_start = _s_bot / 2.0
+        for i in range(_n_bot):
+            x_pos = x_start + i * _s_bot
+            ax.add_patch(patches.Circle((x_pos, y_bot), _draw_bot / 2,
+                         facecolor=CLR_REBAR, edgecolor=CLR_REBAR_LINE, linewidth=1.5))
 
-    # 상부근 (M_neg)
-    _db_top = _parse_rebar(rebar_string_top)[0] or 9.53
+    # --- 3. 상부근 (T1) ---
+    _db_top, _s_top, _n_top = _parse_rebar(rebar_string_top)
+    _db_top = _db_top or 9.53
+    _draw_top = _db_top * REBAR_SCALE
     y_top = h - cover - _db_top / 2.0
-    _draw_bars(y_top, rebar_string_top, 'blue', '상부근')
+    if _n_top > 0:
+        x_start = _s_top / 2.0
+        for i in range(_n_top):
+            x_pos = x_start + i * _s_top
+            ax.add_patch(patches.Circle((x_pos, y_top), _draw_top / 2,
+                         facecolor=CLR_REBAR, edgecolor=CLR_REBAR_LINE, linewidth=1.5))
 
-    # 배력근 (수축·온도 — 직교 방향, 수평선으로 표시)
+    # --- 4. 배력근 (직교 방향 — 수평 실선) ---
+    _db_dist_val = 9.53
+    y_dist = y_bot
     if rebar_string_dist and '@' in rebar_string_dist:
         _db_dist, _s_dist, _n_dist = _parse_rebar(rebar_string_dist)
-        _db_dist = _db_dist or 9.53
-        # 하부근 바로 위에 배력근 (직교 방향이므로 단면에서 수평선으로 보임)
-        y_dist = y_bot + _db_bot / 2.0 + _db_dist / 2.0 + 2.0
-        # 직교 방향 철근 → 단면에 수평 실선으로 표현 (단면을 관통)
-        fig.add_trace(go.Scatter(
-            x=[-b/2 + 15, b/2 - 15], y=[y_dist, y_dist],
-            mode='lines',
-            line=dict(color='green', width=max(_db_dist * 0.3, 2)),
-            name=f'배력근 ({rebar_string_dist})', hoverinfo='name'
-        ))
-        # 양쪽 끝 표시 (단면 절단 표시)
-        fig.add_trace(go.Scatter(
-            x=[-b/2 + 15, b/2 - 15], y=[y_dist, y_dist],
-            mode='markers',
-            marker=dict(size=max(_db_dist * 0.6, 4), color='green',
-                        symbol='line-ns', line=dict(width=1.5, color='green')),
-            showlegend=False, hoverinfo='skip'
-        ))
+        _db_dist_val = _db_dist or 9.53
+        _draw_dist = _db_dist_val * REBAR_SCALE
+        y_dist = y_bot + _db_bot / 2.0 + _db_dist_val / 2.0 + 2.0
+        ax.add_patch(patches.Rectangle((cover, y_dist - _draw_dist / 2),
+                     b - 2 * cover, _draw_dist,
+                     facecolor=CLR_DIST, edgecolor='none', alpha=0.7))
 
-    # 치수선: t_slab 높이
-    _dim_x = b/2 + 60
-    fig.add_shape(type='line', x0=_dim_x, y0=0, x1=_dim_x, y1=h,
-                  line=dict(color='gray', width=1.5))
-    for _y in [0, h]:
-        fig.add_shape(type='line', x0=_dim_x-15, y0=_y, x1=_dim_x+15, y1=_y,
-                      line=dict(color='gray', width=1.5))
-    fig.add_annotation(x=_dim_x+10, y=h/2, text=f"t={h:.0f}",
-                       showarrow=False, font=dict(size=11, color='gray'))
+    # --- 5. 유효깊이(d) 치수선 — 좌측 ---
+    d_eff = h - cover - _db_bot / 2.0
+    d_x = -35
+    ax.plot([d_x, d_x], [h, h - d_eff], color=CLR_DIM_D, linewidth=1)
+    for _dy in [h, h - d_eff]:
+        ax.plot([d_x - 5, d_x + 5], [_dy, _dy], color=CLR_DIM_D, linewidth=1)
+    ax.text(d_x - 16, h - d_eff / 2, f"d={d_eff:.0f}",
+            fontsize=7, color=CLR_DIM_D, ha='center', va='center', rotation=90)
+    # d 보조 점선
+    ax.plot([0, d_x + 5], [h - d_eff, h - d_eff],
+            color=CLR_DIM_D, linewidth=0.5, linestyle=':')
 
-    # 치수선: 피복두께
-    _cv_x = -b/2 - 40
-    fig.add_shape(type='line', x0=_cv_x, y0=0, x1=_cv_x, y1=cover,
-                  line=dict(color='orange', width=1, dash='dot'))
-    fig.add_annotation(x=_cv_x-5, y=cover/2, text=f"c={cover:.0f}",
-                       showarrow=False, font=dict(size=9, color='orange'))
+    # --- 6. 피복두께 — 상/하 ---
+    cv_x = -12
+    for (_y0, _y1) in [(0, cover), (h - cover, h)]:
+        ax.plot([cv_x, cv_x], [_y0, _y1], color=CLR_DIM_D, linewidth=0.7, linestyle=':')
+        for _yt in [_y0, _y1]:
+            ax.plot([cv_x - 3, cv_x + 3], [_yt, _yt], color=CLR_DIM_D, linewidth=0.7)
 
-    fig.update_layout(
-        title="슬래브 단면도 (1m 스트립)",
-        xaxis=dict(title='폭 (mm)', scaleanchor='y', scaleratio=1,
-                   showgrid=False, zeroline=False),
-        yaxis=dict(title='높이 (mm)', showgrid=False, zeroline=False),
-        height=300, margin=dict(l=40, r=60, t=40, b=40),
-        showlegend=True, legend=dict(x=0.01, y=0.99, font=dict(size=10))
-    )
+    # --- 7. 두께(t) 치수선 — 우측 ---
+    dim_x = b + 35
+    tick = 6
+    ax.plot([dim_x, dim_x], [0, h], color=CLR_DIM, linewidth=1.2)
+    for _yt in [0, h]:
+        ax.plot([dim_x - tick, dim_x + tick], [_yt, _yt], color=CLR_DIM, linewidth=1.2)
+    ax.text(dim_x + 18, h / 2, f"t={h:.0f}",
+            fontsize=8, color=CLR_DIM, ha='center', va='center', rotation=-90)
+
+    # 폭(b) 치수선 — 하단
+    dim_y = -18
+    ax.plot([0, b], [dim_y, dim_y], color=CLR_DIM, linewidth=1.2)
+    for _xt in [0, b]:
+        ax.plot([_xt, _xt], [dim_y - tick, dim_y + tick], color=CLR_DIM, linewidth=1.2)
+    ax.text(b / 2, dim_y - 12, "b = 1000 (1m strip)",
+            fontsize=7, color=CLR_DIM, ha='center', va='center')
+
+    # --- 8. 지시선 (annotate) ---
+    _ann_x = b + 60
+    _arrow_props = dict(arrowstyle='->', color=CLR_LABEL, lw=1)
+    if _n_top > 0:
+        ax.annotate(f"T1: {rebar_string_top}",
+                    xy=(b - 50, y_top), xytext=(_ann_x + 50, y_top),
+                    fontsize=7, color=CLR_LABEL, family='monospace',
+                    arrowprops=_arrow_props, va='center')
+    if _n_bot > 0:
+        ax.annotate(f"B1: {rebar_string_bot}",
+                    xy=(b - 50, y_bot), xytext=(_ann_x + 50, y_bot + 12),
+                    fontsize=7, color=CLR_LABEL, family='monospace',
+                    arrowprops=_arrow_props, va='center')
+    if rebar_string_dist and '@' in rebar_string_dist:
+        ax.annotate(f"Dist: {rebar_string_dist}",
+                    xy=(b - 50, y_dist), xytext=(_ann_x + 50, y_dist - 12),
+                    fontsize=7, color=CLR_LABEL, family='monospace',
+                    arrowprops=_arrow_props, va='center')
+
+    # --- 9. 재료 정보 ---
+    _info = f"fck={fck:.0f}MPa  fy={fy:.0f}MPa  c={cover:.0f}mm  d={d_eff:.0f}mm"
+    ax.text(b / 2, h + 12, _info,
+            fontsize=6, color='#666666', ha='center', va='bottom', family='monospace')
+
+    # --- 제목 ---
+    ax.set_title("SLAB SECTION (1m STRIP)", fontsize=10, family='monospace', pad=20)
+
+    # --- 범위 ---
+    ax.set_xlim(-60, b + 160)
+    ax.set_ylim(-45, h + 25)
+
+    fig.tight_layout()
     return fig
