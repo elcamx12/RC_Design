@@ -688,7 +688,11 @@ def _parse_best_rc_beam(page):
     skin_w = _find_word(words, 'Skin')
     if skin_w:
         row = _words_at_y(words, skin_w['top'])
-        parts = [w['text'] for w in row if w['text'] not in ('Skin', ':')]
+        # Skin 행에서 'Skin', ':', 순수 숫자(단면 치수)를 제외
+        import re as _re_skin
+        parts = [w['text'] for w in row
+                 if w['text'] not in ('Skin', ':')
+                 and not _re_skin.fullmatch(r'\d+', w['text'])]
         if parts:
             r.skin_rebar = ' '.join(parts)
 

@@ -88,7 +88,7 @@ def main():
         st.header("🏗️ RC 구조 설계")
         design_mode = st.radio(
             "모드 선택",
-            ["📐 분포하중 설계", "📄 구조계산서 검토"],
+            ["📄 구조계산서 검토", "📐 분포하중 설계"],
             horizontal=True,
             key="design_mode_radio",
         )

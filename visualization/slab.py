@@ -2,7 +2,7 @@ import matplotlib
 matplotlib.use('Agg')  # Streamlit 호환 백엔드
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-matplotlib.rcParams['font.family'] = ['NanumGothic', 'Malgun Gothic', 'sans-serif']
+matplotlib.rcParams['font.family'] = ['Malgun Gothic', 'NanumGothic', 'sans-serif']
 matplotlib.rcParams['axes.unicode_minus'] = False
 import numpy as np
 

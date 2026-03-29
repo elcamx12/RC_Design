@@ -4,7 +4,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-matplotlib.rcParams['font.family'] = ['NanumGothic', 'Malgun Gothic', 'sans-serif']
+matplotlib.rcParams['font.family'] = ['Malgun Gothic', 'NanumGothic', 'sans-serif']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
 def plot_pm_diagram(rebar_design, axial_moment):

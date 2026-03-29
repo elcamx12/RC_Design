@@ -4,8 +4,8 @@ import tempfile
 import pandas as pd
 
 def _pdf_import_section():
-    """구조계산서 분석 — AI 분석 + 자동 분석 통합 UI"""
-    with st.expander("📂 구조계산서 분석", expanded=False):
+    """구조계산서 업로드 — AI 기반 추출 + 코드 기반 추출 통합 UI"""
+    with st.expander("📂 구조계산서 업로드", expanded=False):
         # ── 공용 PDF 업로더 ──────────────────────────────────────────────
         uploaded = st.file_uploader(
             "MIDAS Gen / BeST.RC 구조계산서 PDF",
@@ -14,23 +14,23 @@ def _pdf_import_section():
             key="pdf_uploader"
         )
         if not uploaded:
-            st.info("PDF 파일을 업로드하면 AI 분석 또는 자동 분석으로 설계 데이터를 추출합니다.")
+            st.info("PDF 파일을 업로드하면 AI 기반 추출 또는 코드 기반 추출로 설계 데이터를 가져옵니다.")
             return
 
         # ── 분석 방식 선택 탭 ────────────────────────────────────────────
-        tab_ai, tab_auto = st.tabs(["🤖 AI 분석", "⚙️ 자동 분석"])
+        tab_auto, tab_ai = st.tabs(["⚙️ 코드 기반 추출", "🤖 AI 기반 추출"])
 
         # ═══════════════════════════════════════════════════════════════
-        # AI 분석 탭
-        # ═══════════════════════════════════════════════════════════════
-        with tab_ai:
-            _render_ai_analysis(uploaded)
-
-        # ═══════════════════════════════════════════════════════════════
-        # 자동 분석 탭
+        # 코드 기반 추출 탭
         # ═══════════════════════════════════════════════════════════════
         with tab_auto:
             _render_auto_analysis(uploaded)
+
+        # ═══════════════════════════════════════════════════════════════
+        # AI 기반 추출 탭
+        # ═══════════════════════════════════════════════════════════════
+        with tab_ai:
+            _render_ai_analysis(uploaded)
 
 
 def _render_ai_analysis(uploaded):
@@ -43,7 +43,7 @@ def _render_ai_analysis(uploaded):
         )
         from parsers.ai_pdf_parser import parse_pdf_with_ai
     except ImportError as e:
-        st.error(f"AI 분석 모듈 로드 오류: {e}")
+        st.error(f"AI 추출 모듈 로드 오류: {e}")
         return
 
     # ── API 키 관리 ──────────────────────────────────────────────────
@@ -88,7 +88,7 @@ def _render_ai_analysis(uploaded):
         return
 
     # ── 분석 실행 ────────────────────────────────────────────────────
-    if st.button("🤖 AI 분석 실행", type="primary", key="ai_run_btn"):
+    if st.button("🤖 AI 기반 추출 실행", type="primary", key="ai_run_btn"):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(uploaded.getvalue())
             tmp_path = tmp.name
@@ -98,7 +98,7 @@ def _render_ai_analysis(uploaded):
             st.session_state['ai_analysis_result'] = result
             st.session_state['ai_analysis_filename'] = uploaded.name
         except Exception as e:
-            st.error(f"AI 분석 오류: {e}")
+            st.error(f"AI 추출 오류: {e}")
             return
         finally:
             os.unlink(tmp_path)
@@ -119,7 +119,7 @@ def _render_ai_analysis(uploaded):
 
     _img_sent = result.get('images_sent', 0)
     _img_label = f" | 📷 이미지 {_img_sent}장 전송" if _img_sent > 0 else " | ⚠️ 이미지 미전송"
-    st.success(f"AI 분석 완료: {result.get('pages_used', '?')}/{result.get('pages_total', '?')} 페이지 분석 | {len(members)}개 부재 인식{_img_label}")
+    st.success(f"AI 추출 완료: {result.get('pages_used', '?')}/{result.get('pages_total', '?')} 페이지 | {len(members)}개 부재 인식{_img_label}")
 
     beams = [m for m in members if m.get('type') == 'beam']
     columns = [m for m in members if m.get('type') == 'column']
@@ -135,7 +135,7 @@ def _render_ai_analysis(uploaded):
     # ── 입력 적용 (설계 모드에서만 표시) ──
     _is_review = st.session_state.get('design_mode_radio') == '📄 구조계산서 검토'
     if _is_review:
-        st.info("✅ AI 분석 결과가 아래 검토 부재 설정에 자동 반영됩니다.")
+        st.info("✅ AI 추출 결과가 아래 검토 부재 설정에 자동 반영됩니다.")
         return
 
     st.markdown("---")
@@ -212,7 +212,7 @@ def _render_auto_analysis(uploaded):
         st.error("pdf_parser.py 또는 pdfplumber가 설치되지 않았습니다: pip install pdfplumber")
         return
 
-    if st.button("⚙️ 자동 분석 실행", type="primary", key="auto_parse_btn"):
+    if st.button("⚙️ 코드 기반 추출 실행", type="primary", key="auto_parse_btn"):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(uploaded.getvalue())
             tmp_path = tmp.name
@@ -341,9 +341,9 @@ def _render_auto_analysis(uploaded):
                 if c.Vuy_kN:
                     st.markdown(f"전단: Vuy={c.Vuy_kN}kN　φVny={c.phi_Vny_kN}kN　CR={c.check_ratio_shear}")
 
-    # ── 검토 모드 연동 — 자동 분석 결과를 AI 형식으로 변환하여 저장 ──
+    # ── 검토 모드 연동 — 코드 기반 추출 결과를 AI 형식으로 변환하여 저장 ──
     # 검토 모드(input.py render_review_input_section)가 session_state['ai_analysis_result']를 읽으므로
-    # 자동 분석 결과도 같은 형식으로 저장하면 검토 모드에서도 사용 가능
+    # 코드 기반 추출 결과도 같은 형식으로 저장하면 검토 모드에서도 사용 가능
     ai_format_members = []
     for b in beams:
         _mn = b.Mu_neg or (0, 0, 0)
@@ -354,7 +354,8 @@ def _render_auto_analysis(uploaded):
             "type": "beam",
             "software": b.source,
             "section": {"B_mm": b.B_mm, "H_mm": b.H_mm, "Cx_mm": None, "Cy_mm": None,
-                        "Loc_top_mm": b.Loc_top_mm, "Loc_bot_mm": b.Loc_bot_mm},
+                        "Loc_top_mm": b.Loc_top_mm, "Loc_bot_mm": b.Loc_bot_mm,
+                        "B_top_mm": b.B_top_mm, "H_top_mm": b.H_top_mm},
             "material": {"fck_MPa": b.fck, "fy_MPa": b.fy, "fys_MPa": b.fys},
             "geometry": {"span_m": b.span_m, "height_m": None},
             "design_forces": {
@@ -366,6 +367,12 @@ def _render_auto_analysis(uploaded):
                 "top": b.rebar_top[0] if isinstance(b.rebar_top, tuple) else b.rebar_top,
                 "bottom": b.rebar_bot[0] if isinstance(b.rebar_bot, tuple) else b.rebar_bot,
                 "stirrup": b.stirrup[0] if isinstance(b.stirrup, tuple) else b.stirrup,
+                "skin": b.skin_rebar,
+            },
+            "load_combinations": {
+                "Mu_neg_lc": b.Mu_neg_lc if b.Mu_neg_lc else None,
+                "Mu_pos_lc": b.Mu_pos_lc if b.Mu_pos_lc else None,
+                "Vu_lc": b.Vu_lc if b.Vu_lc else None,
             },
         })
     for c in cols:
@@ -373,7 +380,8 @@ def _render_auto_analysis(uploaded):
             "name": f"{c.member} [{c.source}]",
             "type": "column",
             "software": c.source,
-            "section": {"B_mm": None, "H_mm": None, "Cx_mm": c.Cx_mm, "Cy_mm": c.Cy_mm},
+            "section": {"B_mm": None, "H_mm": None, "Cx_mm": c.Cx_mm, "Cy_mm": c.Cy_mm,
+                        "clear_cover_mm": c.clear_cover_mm},
             "material": {"fck_MPa": c.fck, "fy_MPa": c.fy},
             "geometry": {"span_m": None, "height_m": c.height_m},
             "design_forces": {

@@ -4,7 +4,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-matplotlib.rcParams['font.family'] = ['NanumGothic', 'Malgun Gothic', 'sans-serif']
+matplotlib.rcParams['font.family'] = ['Malgun Gothic', 'NanumGothic', 'sans-serif']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
 def _draw_rebar_row(ax, b_beam, h_beam, y_center, rebar_string, rebar_steps, layer,
@@ -232,6 +232,216 @@ def plot_rebar_section_review(b_beam, h_beam, sections_data, cover=40.0, stirrup
     ax.set_title(title_prefix, fontsize=10, family='monospace', pad=10)
     fig.tight_layout()
     return fig
+
+def plot_best_section(b, h, rebar_top_str, rebar_bot_str, skin_str='',
+                      cover=40.0, stirrup_d=9.53, b_top=0, h_top=0):
+    """BeST.RC 스타일 단면도 (직사각/T형보).
+    - 연노랑 배경 + 파란 외곽선
+    - 작은 빨간 점 (철근)
+    - Skin 철근 (양 측면)
+    - 외부 치수선 (mm 단위)
+    - T형보 지원
+    """
+    import re as _re
+
+    CLR_BG = '#FFFFCC'       # BeST 연노랑
+    CLR_OUTLINE = '#2255CC'  # 파란 외곽선
+    CLR_STIRRUP = '#CC6600'  # 주황 스터럽
+    CLR_REBAR = '#CC0000'    # 빨간 철근
+    CLR_DIM = '#333333'      # 치수선
+
+    _dia_map = {'D10': 9.53, 'D13': 12.7, 'D16': 15.9, 'D19': 19.1,
+                'D22': 22.2, 'D25': 25.4, 'D29': 28.6, 'D32': 31.8}
+
+    def _parse(rstr):
+        if not rstr:
+            return 0, 0.0
+        m = _re.match(r'(\d+)-D(\d+)', str(rstr).strip())
+        if not m:
+            return 0, 0.0
+        return int(m.group(1)), _dia_map.get(f"D{m.group(2)}", 19.1)
+
+    def _parse_skin(sstr):
+        if not sstr:
+            return 0, 0.0
+        m = _re.match(r'(\d+)/(\d+)\s*-?\s*D(\d+)', str(sstr).strip())
+        if not m:
+            return 0, 0.0
+        return int(m.group(1)) + int(m.group(2)), _dia_map.get(f"D{m.group(3)}", 12.7)
+
+    n_top, dia_top = _parse(rebar_top_str)
+    n_bot, dia_bot = _parse(rebar_bot_str)
+    n_skin, dia_skin = _parse_skin(skin_str)
+
+    is_t = b_top > 0 and h_top > 0
+    h_bot = h - h_top if is_t else h
+    bw = b  # 웹 폭
+
+    # figure 크기: xlim/ylim 비율에 맞춤
+    _draw_w = (max(b_top, b) + 75) if is_t else (b + 50)
+    _draw_h = h + 44  # ylim 여백 포함
+    _fig_base = 2.5  # inch 기준
+    if _draw_w >= _draw_h:
+        _fig_w = _fig_base
+        _fig_h = _fig_base * _draw_h / _draw_w
+    else:
+        _fig_h = _fig_base
+        _fig_w = _fig_base * _draw_w / _draw_h
+    fig, ax = plt.subplots(1, 1, figsize=(_fig_w, _fig_h), dpi=100)
+    ax.set_aspect('equal')
+    ax.axis('off')
+
+    # 원점: 단면 좌하단 = (0, 0)
+    margin = 50
+
+    if is_t:
+        # T형보: Polygon (6개 꼭짓점, 좌하단 시작 반시계)
+        x_flange_left = -(b_top - bw) / 2  # 플랜지 좌측 시작 (웹 중심 기준)
+        pts = [
+            (0, 0),                          # 웹 좌하단
+            (bw, 0),                         # 웹 우하단
+            (bw, h_bot),                     # 웹 우상단 → 플랜지 전환
+            (bw + (b_top - bw) / 2, h_bot),  # 플랜지 우하단
+            (bw + (b_top - bw) / 2, h),      # 플랜지 우상단
+            (-(b_top - bw) / 2, h),           # 플랜지 좌상단
+            (-(b_top - bw) / 2, h_bot),       # 플랜지 좌하단
+            (0, h_bot),                       # 웹 좌상단
+        ]
+        poly = mpatches.Polygon(pts, closed=True,
+                                facecolor=CLR_BG, edgecolor=CLR_OUTLINE, linewidth=2.5)
+        ax.add_patch(poly)
+    else:
+        # 직사각형
+        ax.add_patch(mpatches.Rectangle((0, 0), b, h,
+                     facecolor=CLR_BG, edgecolor=CLR_OUTLINE, linewidth=2.5))
+
+    # 스터럽 (웹 내부)
+    loc_b = cover + stirrup_d
+    loc_t = cover + stirrup_d
+    stir_x0 = loc_b
+    stir_y0 = loc_b
+    stir_w = bw - 2 * loc_b
+    stir_h = h - loc_b - loc_t
+    if stir_w > 0 and stir_h > 0:
+        ax.add_patch(mpatches.Rectangle((stir_x0, stir_y0), stir_w, stir_h,
+                     facecolor='none', edgecolor=CLR_STIRRUP, linewidth=1.2))
+
+    # 철근 배치
+    r_vis = 4.0  # BeST 스타일: 고정 크기 작은 점
+
+    def _draw_rebar_row(n, y, x_start, x_end):
+        if n <= 0:
+            return
+        if n == 1:
+            ax.add_patch(mpatches.Circle(((x_start + x_end) / 2, y), r_vis,
+                         facecolor=CLR_REBAR, edgecolor=CLR_REBAR, linewidth=0.5))
+        else:
+            spacing = (x_end - x_start) / (n - 1)
+            for i in range(n):
+                cx = x_start + i * spacing
+                ax.add_patch(mpatches.Circle((cx, y), r_vis,
+                             facecolor=CLR_REBAR, edgecolor=CLR_REBAR, linewidth=0.5))
+
+    x_inner_l = loc_b + dia_bot / 2 if dia_bot > 0 else loc_b + 10
+    x_inner_r = bw - loc_b - dia_bot / 2 if dia_bot > 0 else bw - loc_b - 10
+    y_bot = loc_b + dia_bot / 2 if dia_bot > 0 else loc_b + 10
+    y_top = h - loc_t - dia_top / 2 if dia_top > 0 else h - loc_t - 10
+
+    # 상부근
+    _draw_rebar_row(n_top, y_top, x_inner_l, x_inner_r)
+    # 하부근
+    _draw_rebar_row(n_bot, y_bot, x_inner_l, x_inner_r)
+
+    # Skin 철근 (양 측면, 중간 높이)
+    if n_skin > 0:
+        n_each = n_skin // 2
+        if n_each > 0:
+            y_mid = (y_bot + y_top) / 2
+            if n_each == 1:
+                # 1개씩: 정중앙
+                ax.add_patch(mpatches.Circle((x_inner_l, y_mid), r_vis,
+                             facecolor=CLR_REBAR, edgecolor=CLR_REBAR, linewidth=0.5))
+                ax.add_patch(mpatches.Circle((x_inner_r, y_mid), r_vis,
+                             facecolor=CLR_REBAR, edgecolor=CLR_REBAR, linewidth=0.5))
+            else:
+                # 여러 개: 균등 배치
+                for i in range(n_each):
+                    yy = y_bot + (y_top - y_bot) * (i + 1) / (n_each + 1)
+                    ax.add_patch(mpatches.Circle((x_inner_l, yy), r_vis,
+                                 facecolor=CLR_REBAR, edgecolor=CLR_REBAR, linewidth=0.5))
+                    ax.add_patch(mpatches.Circle((x_inner_r, yy), r_vis,
+                                 facecolor=CLR_REBAR, edgecolor=CLR_REBAR, linewidth=0.5))
+
+    # 치수선
+    _tick = 5
+    _dim_off = 15
+
+    if is_t:
+        # T형보 치수 (BeST 스타일)
+        _flange_l = -(b_top - bw) / 2  # 플랜지 좌측 x
+        _flange_r = bw + (b_top - bw) / 2  # 플랜지 우측 x
+
+        # 상단: Btop (플랜지 폭)
+        _y_top_dim = h + _dim_off
+        ax.plot([_flange_l, _flange_r], [_y_top_dim, _y_top_dim], color=CLR_DIM, linewidth=0.8)
+        for _x in [_flange_l, _flange_r]:
+            ax.plot([_x, _x], [_y_top_dim - _tick, _y_top_dim + _tick], color=CLR_DIM, linewidth=0.8)
+            ax.plot(_x, _y_top_dim, 'o', color=CLR_DIM, markersize=2)
+        ax.text(bw / 2, _y_top_dim + 8, f'{int(b_top)}', fontsize=7, ha='center', va='bottom', color=CLR_DIM)
+
+        # 하단: Bbot (웹 폭)
+        _y_bot_dim = -_dim_off
+        ax.plot([0, bw], [_y_bot_dim, _y_bot_dim], color=CLR_DIM, linewidth=0.8)
+        for _x in [0, bw]:
+            ax.plot([_x, _x], [_y_bot_dim - _tick, _y_bot_dim + _tick], color=CLR_DIM, linewidth=0.8)
+            ax.plot(_x, _y_bot_dim, 'o', color=CLR_DIM, markersize=2)
+        ax.text(bw / 2, _y_bot_dim - 8, f'{int(bw)}', fontsize=7, ha='center', va='top', color=CLR_DIM)
+
+        # 왼쪽: Hbot (웹 높이) — 웹 좌측에서 약간 왼쪽
+        _x_hbot_dim = -_dim_off - 5
+        ax.plot([_x_hbot_dim, _x_hbot_dim], [0, h_bot], color=CLR_DIM, linewidth=0.8)
+        for _y in [0, h_bot]:
+            ax.plot([_x_hbot_dim - _tick, _x_hbot_dim + _tick], [_y, _y], color=CLR_DIM, linewidth=0.8)
+            ax.plot(_x_hbot_dim, _y, 'o', color=CLR_DIM, markersize=2)
+        ax.text(_x_hbot_dim - 8, h_bot / 2, f'{int(h_bot)}', fontsize=7, ha='right', va='center',
+                rotation=90, color=CLR_DIM)
+
+        # 왼쪽: Htop (플랜지 높이) — 플랜지 좌측 기준
+        _x_htop_dim = _flange_l - _dim_off
+        ax.plot([_x_htop_dim, _x_htop_dim], [h_bot, h], color=CLR_DIM, linewidth=0.8)
+        for _y in [h_bot, h]:
+            ax.plot([_x_htop_dim - _tick, _x_htop_dim + _tick], [_y, _y], color=CLR_DIM, linewidth=0.8)
+            ax.plot(_x_htop_dim, _y, 'o', color=CLR_DIM, markersize=2)
+        ax.text(_x_htop_dim - 8, (h_bot + h) / 2, f'{int(h_top)}', fontsize=7, ha='right', va='center',
+                rotation=90, color=CLR_DIM)
+    else:
+        # 직사각형 치수
+        # 하단: 폭
+        _y_bot_dim = -_dim_off
+        ax.plot([0, b], [_y_bot_dim, _y_bot_dim], color=CLR_DIM, linewidth=0.8)
+        for _x in [0, b]:
+            ax.plot([_x, _x], [_y_bot_dim - _tick, _y_bot_dim + _tick], color=CLR_DIM, linewidth=0.8)
+            ax.plot(_x, _y_bot_dim, 'o', color=CLR_DIM, markersize=2)
+        ax.text(b / 2, _y_bot_dim - 8, f'{int(b)}', fontsize=7, ha='center', va='top', color=CLR_DIM)
+
+        # 왼쪽: 높이
+        _x_left_dim = -_dim_off
+        ax.plot([_x_left_dim, _x_left_dim], [0, h], color=CLR_DIM, linewidth=0.8)
+        for _y in [0, h]:
+            ax.plot([_x_left_dim - _tick, _x_left_dim + _tick], [_y, _y], color=CLR_DIM, linewidth=0.8)
+            ax.plot(_x_left_dim, _y, 'o', color=CLR_DIM, markersize=2)
+        ax.text(_x_left_dim - 8, h / 2, f'{int(h)}', fontsize=7, ha='right', va='center',
+                rotation=90, color=CLR_DIM)
+
+    # 범위 설정 (상하 여백 최소화)
+    x_min = -(b_top - bw) / 2 - 55 if is_t else -35
+    x_max = bw + (b_top - bw) / 2 + 20 if is_t else b + 15
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(-22, h + 22)
+    fig.tight_layout(pad=0.1)
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.98, bottom=0.02)
+    return fig
+
 
 def plot_beam_side_view(L_beam, h_beam, rebar_string_top, rebar_steps_top, layer_top,
                         rebar_string_bot, rebar_steps_bot, layer_bot, s_final, beam_type,

@@ -2054,9 +2054,9 @@ def _render_todo(results, inputs, common, beam_x, beam_y, columns, column):
     # --------------------------------------------------------------------------
     st.divider()
     st.subheader("📋 11. 미구현 항목 및 개선 예정 사항")
-    st.info("💡 아래 목록은 `계획.md` 파일에서 자동으로 읽어옵니다. 계획.md를 수정하면 이 출력창도 자동으로 업데이트됩니다.")
+    st.info("💡 아래 목록은 `계획 및 수정사항.md` 파일에서 자동으로 읽어옵니다.")
 
-    _plan_path = os.path.join(BASE_PATH, '계획.md')
+    _plan_path = os.path.join(BASE_PATH, '계획 및 수정사항.md')
     if os.path.exists(_plan_path):
         with open(_plan_path, 'r', encoding='utf-8') as _f:
             _plan_content = _f.read()
@@ -2066,9 +2066,9 @@ def _render_todo(results, inputs, common, beam_x, beam_y, columns, column):
         if _match:
             st.markdown(_match.group(1))
         else:
-            st.warning("계획.md에서 '수정해야 하는 것들' 섹션을 찾을 수 없습니다.")
+            st.warning("'계획 및 수정사항.md'에서 '수정사항' 섹션을 찾을 수 없습니다.")
     else:
-        st.warning(f"계획.md 파일을 찾을 수 없습니다: `{_plan_path}`")
+        st.warning(f"'계획 및 수정사항.md' 파일을 찾을 수 없습니다: `{_plan_path}`")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2135,11 +2135,327 @@ def render_review_output_section(results):
             with tab:
                 _render_review_column_detail(col_data)
 
+    # ── 3D 배근도 ──
+    frame_3d_data = results.get('frame_3d')
+    if frame_3d_data:
+        st.subheader("4. 3D 골조 배근도")
+        try:
+            from visualization import plot_3d_frame_rebar
+            _compat_results = frame_3d_data['results']
+            _compat_inputs = frame_3d_data['inputs']
+            # beam_x, beam_y, column이 모두 있어야 렌더링 가능
+            if 'beam_x' in _compat_results and 'beam_y' in _compat_results and 'column' in _compat_results:
+                fig_3d = plot_3d_frame_rebar(_compat_results, _compat_inputs)
+                st.plotly_chart(fig_3d, use_container_width=True, key="review_3d_rebar")
+            else:
+                _missing = []
+                if 'beam_x' not in _compat_results: _missing.append("천장보 X")
+                if 'beam_y' not in _compat_results: _missing.append("천장보 Y")
+                if 'column' not in _compat_results: _missing.append("기둥")
+                st.info(f"3D 배근도를 표시하려면 다음 부재가 매핑되어야 합니다: {', '.join(_missing)}")
+        except Exception as e:
+            st.warning(f"⚠️ 3D 배근도 렌더링 실패: {e}")
+
+
+def _render_best_beam_detail(bm):
+    """BeST.RC 보 검토 결과 상세 — 수식 전개 형식."""
+    # Streamlit CSS 오버라이드
+    st.markdown(
+        '<style>'
+        '.best-tbl table, .best-tbl th, .best-tbl td, .best-tbl tr '
+        '{border:none !important; border-width:0 !important;}'
+        '</style>',
+        unsafe_allow_html=True)
+
+    _n = 'border:none !important; padding:3px 8px; font-size:13px;'
+    _nl = f'{_n} width:45%;'
+    # BeST 섹션 박스: st.container(border=True) 사용
+    _ok_ng = lambda ok: '<span style="color:blue;">O.K.</span>' if ok else '<span style="color:red; font-weight:bold;">N.G.</span>'
+
+    _name = bm.get('name', '')
+    _clean_name = _name.split('[')[0].strip() if '[' in _name else _name
+    _fck = bm.get('fc_k', 0)
+    _fy = bm.get('fy', 0)
+    _fys = bm.get('fys', 0)
+    _b = bm.get('b_beam', 0)
+    _h = bm.get('h_beam', 0)
+    _b_top = bm.get('b_top', 0)
+    _h_top = bm.get('h_top', 0)
+    from review.calculation_review import _get_alpha1_beta1
+    _alpha1_disp, _beta1 = _get_alpha1_beta1(_fck)
+    _overall_icon = '✅ O.K.' if bm['ok_overall'] else '❌ N.G.'
+
+    # BeST는 END_I에 단일값으로 저장됨
+    end_i = bm['locations'].get('END_I', {})
+    neg = end_i.get('flexural_neg', {})
+    pos = end_i.get('flexural_pos', {})
+    sh = end_i.get('shear', {})
+
+    # 헤더
+    st.markdown(
+        f'<div style="border-bottom:2px solid #333; padding-bottom:4px; margin-bottom:12px;">'
+        f'<span style="font-size:13px; color:#888;">BeST.RC</span>'
+        f'&nbsp;&nbsp;&nbsp;<b style="font-size:16px;">MEMBER : {_clean_name}</b>'
+        f'&nbsp;&nbsp;&nbsp;<span style="font-size:14px;">{_overall_icon}</span></div>',
+        unsafe_allow_html=True)
+
+    # ── Design Conditions (변수 준비) ──
+    _fys_line = f"<tr><td style='{_n}'></td><td style='{_n}'>fy = {int(_fy)},&emsp;fys = {int(_fys)} MPa</td></tr>" if _fys > 0 else ""
+    if _b_top > 0 and _h_top > 0:
+        _sec_line = (f"<tr><td style='{_n}'>Section Data</td><td style='{_n}'>"
+                     f"B_top = {int(_b_top)} mm&emsp;H_top = {int(_h_top)} mm</td></tr>"
+                     f"<tr><td style='{_n}'></td><td style='{_n}'>"
+                     f"B_bot = {int(_b)} mm&emsp;H_bot = {int(_h - _h_top)} mm</td></tr>")
+    else:
+        _sec_line = f"<tr><td style='{_n}'>Section Data</td><td style='{_n}'>B = {int(_b)} mm&emsp;H = {int(_h)} mm</td></tr>"
+
+    _rebar_top = bm.get('rebar_top', '-')
+    _rebar_bot = bm.get('rebar_bot', '-')
+    _skin = bm.get('skin_rebar', '')
+    _skin_line = f"<tr><td style='{_n}'></td><td style='{_n}'>Skin : {_skin}</td></tr>" if _skin else ""
+    _loc_top = neg.get('flexural_steps', {}).get('Loc', 0)
+    _loc_bot = pos.get('flexural_steps', {}).get('Loc', 0)
+    _loc_top_str = f" (Loc. = {_loc_top:.0f} mm)" if _loc_top > 0 else ""
+    _loc_bot_str = f" (Loc. = {_loc_bot:.0f} mm)" if _loc_bot > 0 else ""
+
+    from review.calculation_review import _parse_rebar_string, _parse_skin_rebar
+    _, _, _As_top_only = _parse_rebar_string(_rebar_top)
+    _, _, _As_bot_only = _parse_rebar_string(_rebar_bot)
+    _, _, _As_skin_only = _parse_skin_rebar(_skin)
+    _As_total = _As_top_only + _As_bot_only + _As_skin_only
+    if _b_top > 0 and _h_top > 0:
+        _Ag = _b_top * _h_top + _b * (_h - _h_top)
+    else:
+        _Ag = _b * _h
+    _rho_st = _As_total / _Ag if _Ag > 0 else 0
+
+    _dc_html = f"""
+    <div class="best-tbl">
+    <table style="width:100%; border-collapse:collapse;">
+    <tr><td style="{_n}">Material Data</td><td style="{_n}">f_ck = {int(_fck)} N/mm² (β₁ = {_beta1:.3f})</td></tr>
+    {_fys_line}
+    {_sec_line}
+    <tr><td style="{_n}">Rebar Data</td><td style="{_n}">Upper : {_rebar_top}{_loc_top_str}</td></tr>
+    <tr><td style="{_n}"></td><td style="{_n}">Lower : {_rebar_bot}{_loc_bot_str}</td></tr>
+    {_skin_line}
+    <tr><td style="{_n}"></td><td style="{_n}">Total Rebar Area = {_As_total:.0f} mm² (ρ_st = {_rho_st:.4f})</td></tr>
+    </table>
+    </div>
+    """
+    # ── Design Conditions(왼쪽 박스) + 단면도(오른쪽 박스) ──
+    # 왼쪽 텍스트 줄 수로 높이 계산
+    _dc_lines = 5
+    if _fys > 0:
+        _dc_lines += 1
+    if _b_top > 0 and _h_top > 0:
+        _dc_lines += 1
+    if _skin:
+        _dc_lines += 1
+    _dc_lines += 1
+    _dc_box_h = 70 + _dc_lines * 28
+
+    # 오른쪽 박스 스크롤 제거 CSS
+    st.markdown(
+        '<style>'
+        '.best-sec-box [data-testid="stVerticalBlockBorderWrapper"] > div[style*="overflow"] '
+        '{overflow:hidden !important;}'
+        '</style>',
+        unsafe_allow_html=True)
+
+    _col_dc, _col_sec = st.columns([3, 2])
+    with _col_dc:
+        with st.container(border=True, height=_dc_box_h):
+            st.markdown("#### ◆ Design Conditions ◆")
+            st.markdown(_dc_html, unsafe_allow_html=True)
+    with _col_sec:
+        with st.container(border=True, height=_dc_box_h):
+            try:
+                from visualization import plot_best_section
+                import io as _io, base64 as _b64
+                _cover_sec = float(bm.get('cover', 40) or 40)
+                fig_sec = plot_best_section(
+                    _b, _h, _rebar_top, _rebar_bot, skin_str=_skin,
+                    cover=_cover_sec, stirrup_d=9.53,
+                    b_top=_b_top, h_top=_h_top)
+                _buf = _io.BytesIO()
+                fig_sec.savefig(_buf, format='png', bbox_inches='tight', pad_inches=0.02, dpi=150)
+                plt.close(fig_sec)
+                _buf.seek(0)
+                _img_b64 = _b64.b64encode(_buf.read()).decode()
+                # HTML img 태그로 직접 삽입 (Streamlit 마진 없음, 100% 폭, 높이 자동)
+                _avail_h = _dc_box_h - 34  # border+padding
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;justify-content:center;height:{_avail_h}px;">'
+                    f'<img src="data:image/png;base64,{_img_b64}" '
+                    f'style="max-width:100%;max-height:{_avail_h}px;object-fit:contain;">'
+                    f'</div>',
+                    unsafe_allow_html=True)
+            except Exception as _e_best_sec:
+                st.caption(f"⚠️ 단면도: {_e_best_sec}")
+
+    # ── Design Force and Moment ──
+    _Mu = neg.get('Mu', 0)
+    _Vu = sh.get('Vu', 0)
+    with st.container(border=True):
+        st.markdown("#### ◆ Design Force and Moment ◆")
+        st.markdown(f"""
+        <div class="best-tbl">
+        <table style="width:100%; border-collapse:collapse;">
+        <tr><td style="{_n}">M_u = {_Mu:.1f} kN·m,&emsp;T_u = 0.0 kN·m</td></tr>
+        <tr><td style="{_n}">V_u = {_Vu:.1f} kN</td></tr>
+        </table>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── Check Crack Width ──
+    _crack = end_i.get('crack', {})
+    with st.container(border=True):
+        st.markdown("#### ◆ Check Crack Width ◆")
+        if _crack:
+            _smax_cr = _crack.get('smax', 0)
+            _s_cr = _crack.get('s_rebar', 0)
+            _crack_ok_val = _crack.get('ok', True)
+            st.markdown(
+                f'<div class="best-tbl"><table style="width:100%; border-collapse:collapse;">'
+                f'<tr><td style="{_n}">s_max = Min[380(280/f_s)-2.5c_c, 300(280/f_s)]</td>'
+                f'<td style="{_n}">= {_smax_cr:.0f} &nbsp;{">" if _smax_cr >= _s_cr else "<"}&nbsp; '
+                f's = {_s_cr:.0f} mm &nbsp;--->&nbsp; {_ok_ng(_crack_ok_val)}</td></tr>'
+                f'</table></div>', unsafe_allow_html=True)
+        else:
+            st.caption("균열 검사 데이터 없음")
+
+    # ── Check Bending Moment Capacity ──
+    _phi = neg.get('phi', 0.85)
+    _cb = neg.get('cb', 0)
+    _c = neg.get('c', 0)
+    _et = neg.get('epsilon_t', 0)
+    _Ts = neg.get('Ts_kN', 0)
+    _Cs = neg.get('Cs_kN', 0)
+    _Cc = neg.get('Cc_kN', 0)
+    _phiMn = neg.get('phi_Mn', 0)
+    _ratio = neg.get('check_ratio', 0)
+    _ok_flex = neg.get('ok', True)
+    _et_ok = _et >= 0.005
+    _12Mcr = neg.get('1.2Mcr', 0)
+
+    _flex_html = f"""
+    <div class="best-tbl">
+    <table style="width:100%; border-collapse:collapse;">
+    <tr><td style="{_nl}">Strength Reduction Factor</td><td style="{_n}">Φ = {_phi:.3f}</td></tr>
+    <tr><td style="{_nl}">Balanced Axis Depth</td><td style="{_n}">c_b = {_cb:.0f} mm</td></tr>
+    <tr><td style="{_nl}">Neutral Axis Depth</td><td style="{_n}">c = {_c:.0f} mm</td></tr>
+    <tr><td style="{_nl}">Max. Tensile strain</td><td style="{_n}">ε_t = {_et:.4f} {'>' if _et_ok else '<'} 0.0050 &nbsp;--->&nbsp; {_ok_ng(_et_ok)}</td></tr>
+    <tr><td style="{_nl}">Tension : Rebar</td><td style="{_n}">T_s = {-abs(_Ts):.1f} kN</td></tr>
+    <tr><td style="{_nl}">Compression : Rebar</td><td style="{_n}">C_s = {abs(_Cs):.1f} kN</td></tr>
+    <tr><td style="{_nl}">Compression : Concrete</td><td style="{_n}">C_c = {abs(_Cc):.1f} kN</td></tr>
+    <tr><td style="{_nl}">Design Moment Capacity</td><td style="{_n}">ΦM_n = {abs(_phiMn):.1f} kN·m {'>' if abs(_phiMn) >= _12Mcr else '<'} 1.2M_cr = {_12Mcr:.1f} &nbsp;--->&nbsp; {_ok_ng(abs(_phiMn) >= _12Mcr)}</td></tr>
+    <tr><td style="{_nl}">M_u/ΦM_n = {_ratio:.3f}</td><td style="{_n}">{'<' if _ratio <= 1.0 else '>'} 1.000 &nbsp;--->&nbsp; {_ok_ng(_ok_flex)}</td></tr>
+    </table>
+    </div>
+    """
+    with st.container(border=True):
+        st.markdown("#### ◆ Check Bending Moment Capacity ◆")
+        st.markdown(_flex_html, unsafe_allow_html=True)
+
+    # ── Calculate Shear Reinf. (변수 준비) ──
+    _phi_sh = 0.75
+    _phiVc = sh.get('phi_Vc', 0)
+    _phiVs_req = sh.get('phi_Vs_req', 0)
+    _stir_str = bm.get('stirrup', '-')
+    _s_val = sh.get('s', 0)
+    _stir_display = _stir_str if _stir_str else f"2-D10 @{int(_s_val)}" if _s_val > 0 else "-"
+
+    _sh_steps = sh.get('shear_steps', {})
+    _sh_formula = _sh_steps.get('shear_formula', 'simplified')
+    if _sh_formula == 'detailed':
+        _vc_formula_line = (f'<tr><td style="{_nl}">ΦV_c = (0.16√f_ck + 17.6ρ_w·V_u·d/M_u)b_w·d</td>'
+                           f'<td style="{_n}">= {_phiVc:.1f} kN</td></tr>')
+    else:
+        _vc_formula_line = f'<tr><td style="{_nl}">ΦV_c</td><td style="{_n}">= {_phiVc:.1f} kN</td></tr>'
+
+    _shear_html = f"""
+    <div class="best-tbl">
+    <table style="width:100%; border-collapse:collapse;">
+    <tr><td style="{_nl}">Strength Reduction Factor</td><td style="{_n}">Φ = {_phi_sh:.3f}</td></tr>
+    {_vc_formula_line}
+    <tr><td style="{_nl}">ΦV_s,req = V_u - ΦV_c</td><td style="{_n}">= {_phiVs_req:.1f} kN</td></tr>
+    <tr><td style="{_nl}">ΦV_c + ΦV_s,req</td><td style="{_n}">= {_phiVc:.1f} + {_phiVs_req:.1f} = {_phiVc + _phiVs_req:.1f} kN</td></tr>
+    <tr><td style="{_nl}">Required Stirrup Reinf.</td><td style="{_n}">{_stir_display}</td></tr>
+    </table>
+    </div>
+    """
+    with st.container(border=True):
+        st.markdown("#### ◆ Calculate Shear Reinf. ◆")
+        st.markdown(_shear_html, unsafe_allow_html=True)
+
+    # 경고
+    all_warnings = []
+    for sub in ['flexural_neg', 'flexural_pos', 'shear']:
+        all_warnings.extend(end_i.get(sub, {}).get('warnings', []))
+    for w in set(all_warnings):
+        if '오류' in w or 'NG' in w:
+            st.error(w)
+        elif '경고' in w:
+            st.warning(w)
+
+    na = bm.get('not_available', {})
+    if na:
+        _na_text = "\n".join([f"- **{key}**: {msg}" for key, msg in na.items()])
+        st.warning(f"**검토 불가 항목**\n\n{_na_text}")
+
 
 def _render_review_beam_detail(bm):
-    """보 1개의 MIDAS 스타일 검토 결과 상세."""
-    st.markdown(f"**{bm['name']}** — {int(bm['b_beam'])}×{int(bm['h_beam'])}mm | "
-                f"판정: {'✅ OK' if bm['ok_overall'] else '❌ NG'}")
+    """보 1개의 검토 결과 상세 (MIDAS/BeST 분기)."""
+    # Streamlit 기본 테이블 CSS 오버라이드 (선 제거)
+    st.markdown(
+        '<style>.midas-tbl table, .midas-tbl th, .midas-tbl td, .midas-tbl tr '
+        '{border:none !important; border-width:0 !important;}</style>',
+        unsafe_allow_html=True)
+
+    software = bm.get('software', '')
+    is_midas = 'MIDAS' in software.upper() or not software  # 기본값도 MIDAS 형식
+
+    if not is_midas:
+        _render_best_beam_detail(bm)
+        return
+
+    # ── 헤더 (MIDAS) ──
+    if is_midas:
+        _overall_icon = '✅ OK' if bm['ok_overall'] else '❌ NG'
+        st.markdown(
+            f'<div style="border-bottom:2px solid #333; padding-bottom:4px; margin-bottom:12px;">'
+            f'<span style="font-size:13px; color:#888;">midas Gen</span>'
+            f'&nbsp;&nbsp;&nbsp;<b style="font-size:16px;">RC Beam Strength Checking Result</b>'
+            f'&nbsp;&nbsp;&nbsp;<span style="font-size:14px;">{_overall_icon}</span></div>',
+            unsafe_allow_html=True)
+    else:
+        st.markdown(f"**{bm['name']}** — {int(bm['b_beam'])}×{int(bm['h_beam'])}mm | "
+                    f"판정: {'✅ OK' if bm['ok_overall'] else '❌ NG'}")
+
+    # ── 1. Design Information ──
+    if is_midas:
+        _fck = bm.get('fc_k', 0)
+        _fy = bm.get('fy', 0)
+        _fys = bm.get('fys', 0)
+        _span = bm.get('span_m', 0)
+        _name = bm.get('name', '')
+        # 부재명에서 [MIDAS Gen] 등 제거
+        _clean_name = _name.split('[')[0].strip() if '[' in _name else _name
+        _fys_str = f"&emsp;&emsp;fys = {int(_fys)}" if _fys > 0 else ""
+        _span_str = f"{_span:.2f}m" if _span > 0 else "-"
+        st.markdown("#### 1. Design Information")
+        _info_html = f"""
+        <div class="midas-tbl">
+        <table style="width:100%; border-collapse:collapse; font-size:13px; margin-bottom:12px;">
+        <tr><td style="padding:4px 8px; width:20%;">Design Code</td><td style="padding:4px 8px;">KDS 41 30 : 2018</td>
+            <td style="padding:4px 8px; width:15%;">Unit System</td><td style="padding:4px 8px;">kN, m</td></tr>
+        <tr><td style="padding:4px 8px;">Material Data</td><td colspan="3" style="padding:4px 8px;">fck = {int(_fck)}&emsp;&emsp;fy = {int(_fy)}{_fys_str} MPa</td></tr>
+        <tr><td style="padding:4px 8px;">Section Property</td><td style="padding:4px 8px;">{_clean_name} — {int(bm['b_beam'])}×{int(bm['h_beam'])}mm</td>
+            <td style="padding:4px 8px;">Beam Span</td><td style="padding:4px 8px;">{_span_str}</td></tr>
+        </table>
+        </div>
+        """
+        st.markdown(_info_html, unsafe_allow_html=True)
 
     end_i = bm['locations'].get('END_I', {})
     mid = bm['locations'].get('MID', {})
@@ -2240,56 +2556,70 @@ def _render_review_beam_detail(bm):
     as_bot_m = pos_m.get('rebar_string', '-')
     as_bot_j = pos_j.get('rebar_string', '-')
 
+    # LC 번호 (있으면 표시)
+    _lc = bm.get('load_combinations', {})
+    _lc_neg = _lc.get('Mu_neg_lc')  # (I, MID, J) 튜플 또는 None
+    _lc_pos = _lc.get('Mu_pos_lc')
+    _lc_vu = _lc.get('Vu_lc')
+
+    # 공통 테이블 스타일 (MIDAS: 선 없음, 헤더 회색 배경만)
+    _tbl = 'width:100%; border-collapse:collapse; font-size:13px; margin-bottom:16px;'
+    _th = 'padding:6px 8px; text-align:center; background:#e8e8e8; font-weight:bold;'
+    _th_l = 'padding:6px 8px; text-align:left; background:#e8e8e8; font-weight:bold; width:40%;'
+    _td = 'padding:4px 8px; text-align:center;'
+    _td_l = 'padding:4px 8px; text-align:left;'
+    _sec = 'padding:8px 8px 4px 0; font-weight:bold;'
+
+    def _lc_row(label, lc_tuple):
+        """LC No. 행 HTML. 데이터 없으면 빈 문자열."""
+        if not lc_tuple or not isinstance(lc_tuple, (list, tuple)) or len(lc_tuple) < 3:
+            return ''
+        return (f'<tr><td style="{_td_l}">{label}</td>'
+                f'<td style="{_td}">{lc_tuple[0]}</td>'
+                f'<td style="{_td}">{lc_tuple[1]}</td>'
+                f'<td style="{_td}">{lc_tuple[2]}</td></tr>')
+
     bending_html = f"""
-    <table style="width:100%; border-collapse:collapse; font-size:14px; margin-bottom:20px;">
+    <div class="midas-tbl">
+    <table style="{_tbl}">
     <thead>
-    <tr style="background:#2c3e50; color:white;">
-        <th style="padding:8px; text-align:left; width:40%"></th>
-        <th style="padding:8px; text-align:center;">END-I</th>
-        <th style="padding:8px; text-align:center;">MID</th>
-        <th style="padding:8px; text-align:center;">END-J</th>
-    </tr>
+    <tr><th style="{_th_l}"></th>
+        <th style="{_th}">END-I</th><th style="{_th}">MID</th><th style="{_th}">END-J</th></tr>
     </thead>
     <tbody>
-    <tr style="background:#f0f0f0;"><td style="padding:6px;" colspan="4"><b>(-) Negative Moment</b></td></tr>
-    <tr><td style="padding:6px;">Moment (Mu) [kN·m]</td>
-        <td style="text-align:center;">{_fmt(neg_Mu_i)}</td>
-        <td style="text-align:center;">{_fmt(neg_Mu_m)}</td>
-        <td style="text-align:center;">{_fmt(neg_Mu_j)}</td></tr>
-    <tr><td style="padding:6px;">Factored Strength (φMn) [kN·m]</td>
-        <td style="text-align:center;">{_fmt(neg_phiMn_i)}</td>
-        <td style="text-align:center;">{_fmt(neg_phiMn_m)}</td>
-        <td style="text-align:center;">{_fmt(neg_phiMn_j)}</td></tr>
-    <tr><td style="padding:6px;">Check Ratio (Mu/φMn)</td>
-        <td style="text-align:center; {_ratio_color(neg_ratio_i)}">{_fmt(neg_ratio_i, 4)}</td>
-        <td style="text-align:center; {_ratio_color(neg_ratio_m)}">{_fmt(neg_ratio_m, 4)}</td>
-        <td style="text-align:center; {_ratio_color(neg_ratio_j)}">{_fmt(neg_ratio_j, 4)}</td></tr>
+    {_lc_row('(-) Load Combination No.', _lc_neg)}
+    <tr><td style="{_td_l}">Moment (Mu) [kN·m]</td>
+        <td style="{_td}">{_fmt(neg_Mu_i)}</td><td style="{_td}">{_fmt(neg_Mu_m)}</td><td style="{_td}">{_fmt(neg_Mu_j)}</td></tr>
+    <tr><td style="{_td_l}">Factored Strength (φMn) [kN·m]</td>
+        <td style="{_td}">{_fmt(neg_phiMn_i)}</td><td style="{_td}">{_fmt(neg_phiMn_m)}</td><td style="{_td}">{_fmt(neg_phiMn_j)}</td></tr>
+    <tr><td style="{_td_l}">Check Ratio (Mu/φMn)</td>
+        <td style="{_td} {_ratio_color(neg_ratio_i)}">{_fmt(neg_ratio_i, 4)}</td>
+        <td style="{_td} {_ratio_color(neg_ratio_m)}">{_fmt(neg_ratio_m, 4)}</td>
+        <td style="{_td} {_ratio_color(neg_ratio_j)}">{_fmt(neg_ratio_j, 4)}</td></tr>
 
-    <tr style="background:#f0f0f0;"><td style="padding:6px;" colspan="4"><b>(+) Positive Moment</b></td></tr>
-    <tr><td style="padding:6px;">Moment (Mu) [kN·m]</td>
-        <td style="text-align:center;">{_fmt(pos_Mu_i)}</td>
-        <td style="text-align:center;">{_fmt(pos_Mu_m)}</td>
-        <td style="text-align:center;">{_fmt(pos_Mu_j)}</td></tr>
-    <tr><td style="padding:6px;">Factored Strength (φMn) [kN·m]</td>
-        <td style="text-align:center;">{_fmt(pos_phiMn_i)}</td>
-        <td style="text-align:center;">{_fmt(pos_phiMn_m)}</td>
-        <td style="text-align:center;">{_fmt(pos_phiMn_j)}</td></tr>
-    <tr><td style="padding:6px;">Check Ratio (Mu/φMn)</td>
-        <td style="text-align:center; {_ratio_color(pos_ratio_i)}">{_fmt(pos_ratio_i, 4)}</td>
-        <td style="text-align:center; {_ratio_color(pos_ratio_m)}">{_fmt(pos_ratio_m, 4)}</td>
-        <td style="text-align:center; {_ratio_color(pos_ratio_j)}">{_fmt(pos_ratio_j, 4)}</td></tr>
+    <tr><td colspan="4" style="padding:6px 0;"></td></tr>
+    {_lc_row('(+) Load Combination No.', _lc_pos)}
+    <tr><td style="{_td_l}">Moment (Mu) [kN·m]</td>
+        <td style="{_td}">{_fmt(pos_Mu_i)}</td><td style="{_td}">{_fmt(pos_Mu_m)}</td><td style="{_td}">{_fmt(pos_Mu_j)}</td></tr>
+    <tr><td style="{_td_l}">Factored Strength (φMn) [kN·m]</td>
+        <td style="{_td}">{_fmt(pos_phiMn_i)}</td><td style="{_td}">{_fmt(pos_phiMn_m)}</td><td style="{_td}">{_fmt(pos_phiMn_j)}</td></tr>
+    <tr><td style="{_td_l}">Check Ratio (Mu/φMn)</td>
+        <td style="{_td} {_ratio_color(pos_ratio_i)}">{_fmt(pos_ratio_i, 4)}</td>
+        <td style="{_td} {_ratio_color(pos_ratio_m)}">{_fmt(pos_ratio_m, 4)}</td>
+        <td style="{_td} {_ratio_color(pos_ratio_j)}">{_fmt(pos_ratio_j, 4)}</td></tr>
 
-    <tr style="background:#f0f0f0;"><td style="padding:6px;" colspan="4"><b>Rebar</b></td></tr>
-    <tr><td style="padding:6px;">Using Rebar Top (As.top) [m²]</td>
-        <td style="text-align:center;">{_fmt(neg_i.get('As_provided', 0) / 1e6, 4)}</td>
-        <td style="text-align:center;">{_fmt(neg_m.get('As_provided', 0) / 1e6, 4)}</td>
-        <td style="text-align:center;">{_fmt(neg_j.get('As_provided', 0) / 1e6, 4)}</td></tr>
-    <tr><td style="padding:6px;">Using Rebar Bot (As.bot) [m²]</td>
-        <td style="text-align:center;">{_fmt(pos_i.get('As_provided', 0) / 1e6, 4)}</td>
-        <td style="text-align:center;">{_fmt(pos_m.get('As_provided', 0) / 1e6, 4)}</td>
-        <td style="text-align:center;">{_fmt(pos_j.get('As_provided', 0) / 1e6, 4)}</td></tr>
+    <tr><td colspan="4" style="padding:6px 0;"></td></tr>
+    <tr><td style="{_td_l}">Using Rebar Top (As.top) [m²]</td>
+        <td style="{_td}">{_fmt(neg_i.get('As_provided', 0) / 1e6, 4)}</td>
+        <td style="{_td}">{_fmt(neg_m.get('As_provided', 0) / 1e6, 4)}</td>
+        <td style="{_td}">{_fmt(neg_j.get('As_provided', 0) / 1e6, 4)}</td></tr>
+    <tr><td style="{_td_l}">Using Rebar Bot (As.bot) [m²]</td>
+        <td style="{_td}">{_fmt(pos_i.get('As_provided', 0) / 1e6, 4)}</td>
+        <td style="{_td}">{_fmt(pos_m.get('As_provided', 0) / 1e6, 4)}</td>
+        <td style="{_td}">{_fmt(pos_j.get('As_provided', 0) / 1e6, 4)}</td></tr>
     </tbody>
     </table>
+    </div>
     """
     st.markdown(bending_html, unsafe_allow_html=True)
 
@@ -2341,42 +2671,31 @@ def _render_review_beam_detail(bm):
     sh_ratio_j = vu_j / vn_j if vn_j > 0 else 0
 
     shear_html = f"""
-    <table style="width:100%; border-collapse:collapse; font-size:14px; margin-bottom:20px;">
+    <div class="midas-tbl">
+    <table style="{_tbl}">
     <thead>
-    <tr style="background:#2c3e50; color:white;">
-        <th style="padding:8px; text-align:left; width:40%"></th>
-        <th style="padding:8px; text-align:center;">END-I</th>
-        <th style="padding:8px; text-align:center;">MID</th>
-        <th style="padding:8px; text-align:center;">END-J</th>
-    </tr>
+    <tr><th style="{_th_l}"></th>
+        <th style="{_th}">END-I</th><th style="{_th}">MID</th><th style="{_th}">END-J</th></tr>
     </thead>
     <tbody>
-    <tr><td style="padding:6px;">Factored Shear Force (Vu) [kN]</td>
-        <td style="text-align:center;">{_fmt(vu_i)}</td>
-        <td style="text-align:center;">{_fmt(vu_m)}</td>
-        <td style="text-align:center;">{_fmt(vu_j)}</td></tr>
-    <tr><td style="padding:6px;">Shear Strength by Conc. (φVc) [kN]</td>
-        <td style="text-align:center;">{_fmt(phiVc_i)}</td>
-        <td style="text-align:center;">{_fmt(phiVc_m)}</td>
-        <td style="text-align:center;">{_fmt(phiVc_j)}</td></tr>
-    <tr><td style="padding:6px;">Shear Strength by Rebar (φVs) [kN]</td>
-        <td style="text-align:center;">{_fmt(phiVs_i)}</td>
-        <td style="text-align:center;">{_fmt(phiVs_m)}</td>
-        <td style="text-align:center;">{_fmt(phiVs_j)}</td></tr>
-    <tr><td style="padding:6px;">Using Shear Reinf. (AsV) [m²]</td>
-        <td style="text-align:center;">{_fmt(asv_i / 1e6, 4)}</td>
-        <td style="text-align:center;">{_fmt(asv_m / 1e6, 4)}</td>
-        <td style="text-align:center;">{_fmt(asv_j / 1e6, 4)}</td></tr>
-    <tr><td style="padding:6px;">Using Stirrups Spacing</td>
-        <td style="text-align:center;">{stir_i}</td>
-        <td style="text-align:center;">{stir_m}</td>
-        <td style="text-align:center;">{stir_j}</td></tr>
-    <tr><td style="padding:6px;">Check Ratio (Vu/(φVc+φVs))</td>
-        <td style="text-align:center; {_ratio_color(sh_ratio_i)}">{_fmt(sh_ratio_i, 4)}</td>
-        <td style="text-align:center; {_ratio_color(sh_ratio_m)}">{_fmt(sh_ratio_m, 4)}</td>
-        <td style="text-align:center; {_ratio_color(sh_ratio_j)}">{_fmt(sh_ratio_j, 4)}</td></tr>
+    {_lc_row('Load Combination No.', _lc_vu)}
+    <tr><td style="{_td_l}">Factored Shear Force (Vu) [kN]</td>
+        <td style="{_td}">{_fmt(vu_i)}</td><td style="{_td}">{_fmt(vu_m)}</td><td style="{_td}">{_fmt(vu_j)}</td></tr>
+    <tr><td style="{_td_l}">Shear Strength by Conc. (φVc) [kN]</td>
+        <td style="{_td}">{_fmt(phiVc_i)}</td><td style="{_td}">{_fmt(phiVc_m)}</td><td style="{_td}">{_fmt(phiVc_j)}</td></tr>
+    <tr><td style="{_td_l}">Shear Strength by Rebar (φVs) [kN]</td>
+        <td style="{_td}">{_fmt(phiVs_i)}</td><td style="{_td}">{_fmt(phiVs_m)}</td><td style="{_td}">{_fmt(phiVs_j)}</td></tr>
+    <tr><td style="{_td_l}">Using Shear Reinf. (AsV) [m²]</td>
+        <td style="{_td}">{_fmt(asv_i / 1e6, 4)}</td><td style="{_td}">{_fmt(asv_m / 1e6, 4)}</td><td style="{_td}">{_fmt(asv_j / 1e6, 4)}</td></tr>
+    <tr><td style="{_td_l}">Using Stirrups Spacing</td>
+        <td style="{_td}">{stir_i}</td><td style="{_td}">{stir_m}</td><td style="{_td}">{stir_j}</td></tr>
+    <tr><td style="{_td_l}">Check Ratio (Vu/(φVc+φVs))</td>
+        <td style="{_td} {_ratio_color(sh_ratio_i)}">{_fmt(sh_ratio_i, 4)}</td>
+        <td style="{_td} {_ratio_color(sh_ratio_m)}">{_fmt(sh_ratio_m, 4)}</td>
+        <td style="{_td} {_ratio_color(sh_ratio_j)}">{_fmt(sh_ratio_j, 4)}</td></tr>
     </tbody>
     </table>
+    </div>
     """
     st.markdown(shear_html, unsafe_allow_html=True)
 
@@ -2447,9 +2766,7 @@ def _render_review_column_detail(col_data):
         try:
             from visualization import plot_column_section
             import re as _re_col
-            _col_stir = col_data.get('stirrup', '2-D10@125') or 'D10'
-            _m_stir = _re_col.match(r'D(\d+)', str(_col_stir))
-            _tie_dname = f"D{_m_stir.group(1)}" if _m_stir else 'D10'
+            _tie_dname = tie.get('tie_rebar_type', 'D10')
             _tie_dia_map = {'D10': 9.53, 'D13': 12.7}
             _m_main = _re_col.match(r'.*D(\d+)', rd.get('rebar_string_col', 'D19'))
             _main_dname = f"D{_m_main.group(1)}" if _m_main else 'D19'
@@ -2461,7 +2778,7 @@ def _render_review_column_detail(col_data):
                 _main_dia_map.get(_main_dname, 19.1),
                 _tie_dname,
                 _tie_dia_map.get(_tie_dname, 9.53),
-                rd.get('tie_spacing', 200),
+                tie.get('tie_rebar_spacing', 200),
             )
             st.pyplot(fig_sec); plt.close(fig_sec)
         except Exception as _e_rv_col:

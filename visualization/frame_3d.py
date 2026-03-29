@@ -255,18 +255,18 @@ def plot_3d_frame_rebar(results, inputs):
     col_coords = [(0,0), (Lx,0), (Lx,Ly), (0,Ly)]
     for _ci, (cx, cy) in enumerate(col_coords):
         _cw_i = _all_cols_r[_ci % len(_all_cols_r)]['dimensions']['c_column']
-        fig.add_trace(create_box(cx - _cw_i/2, cy - _cw_i/2, 0, _cw_i, _cw_i, H, color='rgba(200, 200, 200, 0.1)'))
+        fig.add_trace(create_box(cx - _cw_i/2, cy - _cw_i/2, 0, _cw_i, _cw_i, H, color='rgba(200, 200, 200, 0.5)'))
 
     # 상부보
-    fig.add_trace(create_box(0, -bx_w/2, H - bx_h, Lx, bx_w, bx_h, color='rgba(100, 149, 237, 0.05)')) # X보 앞
-    fig.add_trace(create_box(0, Ly-bx_w/2, H - bx_h, Lx, bx_w, bx_h, color='rgba(100, 149, 237, 0.05)')) # X보 뒤
-    fig.add_trace(create_box(-by_w/2, 0, H - by_h, by_w, Ly, by_h, color='rgba(60, 179, 113, 0.05)')) # Y보 좌
-    fig.add_trace(create_box(Lx-by_w/2, 0, H - by_h, by_w, Ly, by_h, color='rgba(60, 179, 113, 0.05)')) # Y보 우
+    fig.add_trace(create_box(0, -bx_w/2, H - bx_h, Lx, bx_w, bx_h, color='rgba(200, 200, 200, 0.15)')) # X보 앞
+    fig.add_trace(create_box(0, Ly-bx_w/2, H - bx_h, Lx, bx_w, bx_h, color='rgba(200, 200, 200, 0.15)')) # X보 뒤
+    fig.add_trace(create_box(-by_w/2, 0, H - by_h, by_w, Ly, by_h, color='rgba(200, 200, 200, 0.15)')) # Y보 좌
+    fig.add_trace(create_box(Lx-by_w/2, 0, H - by_h, by_w, Ly, by_h, color='rgba(200, 200, 200, 0.15)')) # Y보 우
     # 바닥보 — 바닥보 독립 설계 치수 사용 (V1 수정)
-    fig.add_trace(create_box(0, -gbx_w/2, 0, Lx, gbx_w, gbx_h, color='rgba(100, 149, 237, 0.05)')) # 바닥 X보 앞
-    fig.add_trace(create_box(0, Ly-gbx_w/2, 0, Lx, gbx_w, gbx_h, color='rgba(100, 149, 237, 0.05)')) # 바닥 X보 뒤
-    fig.add_trace(create_box(-gby_w/2, 0, 0, gby_w, Ly, gby_h, color='rgba(60, 179, 113, 0.05)')) # 바닥 Y보 좌
-    fig.add_trace(create_box(Lx-gby_w/2, 0, 0, gby_w, Ly, gby_h, color='rgba(60, 179, 113, 0.05)')) # 바닥 Y보 우
+    fig.add_trace(create_box(0, -gbx_w/2, 0, Lx, gbx_w, gbx_h, color='rgba(200, 200, 200, 0.15)')) # 바닥 X보 앞
+    fig.add_trace(create_box(0, Ly-gbx_w/2, 0, Lx, gbx_w, gbx_h, color='rgba(200, 200, 200, 0.15)')) # 바닥 X보 뒤
+    fig.add_trace(create_box(-gby_w/2, 0, 0, gby_w, Ly, gby_h, color='rgba(200, 200, 200, 0.15)')) # 바닥 Y보 좌
+    fig.add_trace(create_box(Lx-gby_w/2, 0, 0, gby_w, Ly, gby_h, color='rgba(200, 200, 200, 0.15)')) # 바닥 Y보 우
     # 슬래브 (상부층 + 바닥층)
     _slab_data = results.get('slab')
     if _slab_data:
