@@ -914,12 +914,23 @@ def _parse_best_steel_column(pages):
         if r.fy is None:
             for w in words:
                 if 'y,Bar' in w['text']:
-                    # 아래첨자보다 y가 조금 위인 행이 F = 440 행
                     fy_row = _words_at_y(words, w['top'] - 3, tol=5)
                     for rw in fy_row:
                         v = _sfloat(rw['text'])
                         if v and 100 < v < 1000:
                             r.fy = v
+                            break
+                    break
+
+        # F_y,Stl — "y,Stl" 아래첨자가 있는 행에서 강재 항복강도 추출
+        if r.fys is None:
+            for w in words:
+                if 'y,Stl' in w['text'] or 'y,stl' in w['text']:
+                    fystl_row = _words_at_y(words, w['top'] - 3, tol=5)
+                    for rw in fystl_row:
+                        v = _sfloat(rw['text'])
+                        if v and 100 < v < 1000:
+                            r.fys = v  # BeST.Steel: fys = Fy,Stl
                             break
                     break
 

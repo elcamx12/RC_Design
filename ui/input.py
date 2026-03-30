@@ -638,6 +638,7 @@ def render_review_input_section():
         _def_pu = abs(float(_ac_df.get('Pu_kN') or 0))
         _def_mux = abs(float(_ac_df.get('Mux_kNm') or 0))
         _def_muy = abs(float(_ac_df.get('Muy_kNm') or 0))
+        _def_vu_col = abs(float(_ac_df.get('Vu_I_kN') or 0))
         _def_cfck = float(_ac_mat.get('fck_MPa') or 0)
         _def_cfy = float(_ac_mat.get('fy_MPa') or 0)
         _def_ccover = _estimate_cover(_ac)
@@ -646,6 +647,8 @@ def render_review_input_section():
         _ac_rebar = _ac.get('rebar', {}) or {}
         _def_rebar_vert = _ac_rebar.get('top') or ""
         _def_hoop = _ac_rebar.get('stirrup') or ""
+        _def_steel_sec = _ac.get('steel_section') or ""
+        _def_fy_stl = float(_ac_mat.get('fy_stl_MPa') or 0)
 
         # 선택 변경 시 session_state에 AI 값 강제 써넣기
         if _sel_changed or f"rv_cbx_{i}" not in st.session_state:
@@ -658,7 +661,10 @@ def render_review_input_section():
             st.session_state[f"rv_ccover_{i}"] = str(_def_ccover)
             st.session_state[f"rv_crebar_{i}"] = str(_def_rebar_vert)
             st.session_state[f"rv_choop_{i}"] = str(_def_hoop)
+            st.session_state[f"rv_csteel_{i}"] = str(_def_steel_sec)
+            st.session_state[f"rv_cfystl_{i}"] = str(_def_fy_stl)
             # 원본값 저장
+            st.session_state[f"rv_cfystl_{i}_orig"] = float(_def_fy_stl)
             st.session_state[f"rv_cbx_{i}_orig"] = float(_def_bx)
             st.session_state[f"rv_cby_{i}_orig"] = float(_def_by)
             st.session_state[f"rv_hcol_{i}_orig"] = float(_def_hcol)
@@ -687,17 +693,21 @@ def render_review_input_section():
                 st.session_state[f"rv_cpu_{i}"] = str(_def_pu)
                 st.session_state[f"rv_cmux_{i}"] = str(_def_mux)
                 st.session_state[f"rv_cmuy_{i}"] = str(_def_muy)
+                st.session_state[f"rv_cvu_{i}"] = str(_def_vu_col)
                 st.session_state[f"rv_cpu_{i}_orig"] = _def_pu
                 st.session_state[f"rv_cmux_{i}_orig"] = _def_mux
                 st.session_state[f"rv_cmuy_{i}_orig"] = _def_muy
+                st.session_state[f"rv_cvu_{i}_orig"] = _def_vu_col
 
-            fc1, fc2, fc3 = st.columns(3)
+            fc1, fc2, fc3, fc4 = st.columns(4)
             with fc1:
                 pu = _colored_input("Pu (kN)", f"rv_cpu_{i}")
             with fc2:
                 mux = _colored_input("Mux (kN·m)", f"rv_cmux_{i}")
             with fc3:
                 muy = _colored_input("Muy (kN·m)", f"rv_cmuy_{i}")
+            with fc4:
+                c_vu = _colored_input("Vu (kN)", f"rv_cvu_{i}")
 
             # 구조계산서 배근 (검토용)
             st.caption("**구조계산서 배근 (검토용)**")
@@ -709,13 +719,21 @@ def render_review_input_section():
             with _cr3:
                 c_cover = _colored_input("cover (mm)", f"rv_ccover_{i}")
 
+            # SRC 강재 (선택)
+            _cs1, _cs2 = st.columns(2)
+            with _cs1:
+                c_steel = st.text_input("강재 섹션 (예: ㅁ-26x26x11x11)", key=f"rv_csteel_{i}")
+            with _cs2:
+                c_fy_stl = _colored_input("Fy,stl (MPa)", f"rv_cfystl_{i}")
+
             columns.append({
                 'name': cname, 'bx': cbx, 'by': cby,
                 'c_column': max(cbx, cby),
                 'h_column': hcol,
                 'fc_k': c_fck, 'fy': c_fy, 'cover': c_cover,
-                'Pu': pu, 'Mux': mux, 'Muy': muy,
+                'Pu': pu, 'Mux': mux, 'Muy': muy, 'Vu': c_vu,
                 'rebar_vert': c_rebar, 'hoop': c_hoop,
+                'steel_section': c_steel, 'fy_stl': c_fy_stl,
             })
 
     # ── frame_mapping 생성 ──

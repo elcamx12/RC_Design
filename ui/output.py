@@ -2718,8 +2718,256 @@ def _render_review_beam_detail(bm):
         st.warning(f"**검토 불가 항목**\n\n{_na_text}")
 
 
+def _render_best_column_detail(col_data):
+    """BeST.Steel 기둥 검토 결과 상세 — 수식 전개 형식."""
+    # CSS 오버라이드
+    st.markdown(
+        '<style>.best-tbl table, .best-tbl th, .best-tbl td, .best-tbl tr '
+        '{border:none !important; border-width:0 !important;}</style>',
+        unsafe_allow_html=True)
+
+    _n = 'border:none !important; padding:3px 8px; font-size:13px;'
+    _nl = f'{_n} width:45%;'
+    _ok_ng = lambda ok: '<span style="color:blue;">O.K.</span>' if ok else '<span style="color:red; font-weight:bold;">N.G.</span>'
+
+    rd = col_data.get('rebar_design', {})
+    sl = col_data.get('slenderness', {})
+    tie = col_data.get('tie_rebar_design', {})
+
+    _name = col_data.get('name', '')
+    _clean_name = _name.split('[')[0].strip() if '[' in _name else _name
+    _c = col_data.get('c_column', 0)
+    _h_col = col_data.get('h_column', 0)
+    _fck = col_data.get('fc_k', 0) if 'fc_k' in col_data else 0
+    _fy = col_data.get('fy', 0) if 'fy' in col_data else 0
+    _Pu = col_data.get('Pu', 0)
+    _Mux = col_data.get('Mux', 0)
+    _Muy = col_data.get('Muy', 0)
+    _overall = '✅ O.K.' if col_data['ok_overall'] else '❌ N.G.'
+
+    # ── 헤더 ──
+    st.markdown(
+        f'<div style="border-bottom:2px solid #333; padding-bottom:4px; margin-bottom:12px;">'
+        f'<span style="font-size:13px; color:#888;">BeST.Steel</span>'
+        f'&nbsp;&nbsp;&nbsp;<b style="font-size:16px;">MEMBER : {_clean_name}</b>'
+        f'&nbsp;&nbsp;&nbsp;<span style="font-size:14px;">{_overall}</span></div>',
+        unsafe_allow_html=True)
+
+    # ── Design Conditions ──
+    _rebar_str = rd.get('rebar_vert_input', rd.get('rebar_string_col', '-'))
+    _hoop_str = f"{tie.get('tie_rebar_type', 'D10')}@{int(tie.get('tie_rebar_spacing', 200))}"
+    _rho = rd.get('rho', 0)
+    _As = rd.get('As_provided_col', 0)
+    _Ag = col_data.get('dimensions', {}).get('Ag', _c * _c)
+
+    _dc_html = f"""
+    <div class="best-tbl">
+    <table style="width:100%; border-collapse:collapse;">
+    <tr><td style="{_n}">Material Data</td><td style="{_n}">f_ck = {int(_fck)} N/mm²</td></tr>
+    <tr><td style="{_n}"></td><td style="{_n}">F_y,Bar = {int(_fy)} N/mm²</td></tr>
+    <tr><td style="{_n}">Section Data</td><td style="{_n}">C_x = {int(_c)} mm&emsp;C_y = {int(_c)} mm</td></tr>
+    <tr><td style="{_n}"></td><td style="{_n}">KL_u = {_h_col/1000:.2f} m</td></tr>
+    <tr><td style="{_n}">Rebar Data</td><td style="{_n}">Vert : {_rebar_str} (A_s = {_As:.0f} mm²)</td></tr>
+    <tr><td style="{_n}"></td><td style="{_n}">Hoop : {_hoop_str}</td></tr>
+    </table>
+    </div>
+    """
+
+    # Design Conditions + 단면도
+    _col_dc, _col_sec = st.columns([3, 2])
+    with _col_dc:
+        with st.container(border=True):
+            st.markdown("#### ◆ Design Conditions ◆")
+            st.markdown(_dc_html, unsafe_allow_html=True)
+    with _col_sec:
+        with st.container(border=True):
+            try:
+                from visualization import plot_best_column_section
+                import io as _io, base64 as _b64
+                _n_col = rd.get('n_col', 8)
+                _main_dia = rd.get('rebar_diameter_col', 19.1)
+                _tie_dia = tie.get('tie_rebar_diameter', 9.53)
+                _steel_sec_str = col_data.get('src_data', {}).get('steel_section', '')
+                _cover_val = col_data.get('cover', 40)
+                fig_sec = plot_best_column_section(
+                    _c, _n_col, _main_dia, _cover_val, _tie_dia, _steel_sec_str)
+                _buf = _io.BytesIO()
+                fig_sec.savefig(_buf, format='png', bbox_inches='tight', pad_inches=0.02, dpi=150)
+                plt.close(fig_sec)
+                _buf.seek(0)
+                _img_b64 = _b64.b64encode(_buf.read()).decode()
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;justify-content:center;">'
+                    f'<img src="data:image/png;base64,{_img_b64}" style="max-width:100%;max-height:250px;object-fit:contain;">'
+                    f'</div>', unsafe_allow_html=True)
+            except Exception as _e:
+                st.caption(f"⚠️ 단면도: {_e}")
+
+    # ── Design Force and Moment ──
+    _Mux_input = col_data.get('Mux_input', _Mux)
+    _Muy_input = col_data.get('Muy_input', _Muy)
+    _delta_ns = sl.get('delta_ns', 1.0)
+    _is_amplified = _delta_ns > 1.0
+    with st.container(border=True):
+        st.markdown("#### ◆ Design Force and Moment ◆")
+        _df_html = f"""
+        <div class="best-tbl"><table style="width:100%; border-collapse:collapse;">
+        <tr><td style="{_n}">P_u = {_Pu:.1f} kN</td></tr>
+        <tr><td style="{_n}">M_ux = {_Mux_input:.1f},&emsp;M_uy = {_Muy_input:.1f} kN·m</td></tr>
+        """
+        if _is_amplified:
+            _df_html += f"""
+        <tr><td style="{_n}"><i>세장기둥 모멘트 확대 (δ_ns = {_delta_ns:.3f})</i></td></tr>
+        <tr><td style="{_n}">M_ux,design = {_Mux:.1f},&emsp;M_uy,design = {_Muy:.1f} kN·m</td></tr>
+            """
+        _df_html += "</table></div>"
+        st.markdown(_df_html, unsafe_allow_html=True)
+
+    # ── Check Limitations ──
+    with st.container(border=True):
+        st.markdown("#### ◆ Check Limitations ◆")
+        _fck_ok = _fck >= 21
+        _rho_ok = 0.01 <= _rho <= 0.08 if _rho > 0 else False
+        _lambda = sl.get('lambda_ratio', 0)
+        _lambda_ok = sl.get('ok', True)
+        st.markdown(f"""
+        <div class="best-tbl"><table style="width:100%; border-collapse:collapse;">
+        <tr><td style="{_nl}">Concrete Compressive Strength</td>
+            <td style="{_n}">f_ck = {int(_fck)} N/mm² {'>' if _fck_ok else '<'} 21 N/mm² &nbsp;--->&nbsp; {_ok_ng(_fck_ok)}</td></tr>
+        <tr><td style="{_nl}">Longitudinal Reinforcement Ratio</td>
+            <td style="{_n}">ρ = {_rho:.4f} {'>' if _rho >= 0.01 else '<'} 0.01, {'<' if _rho <= 0.08 else '>'} 0.08 &nbsp;--->&nbsp; {_ok_ng(_rho_ok)}</td></tr>
+        <tr><td style="{_nl}">Slenderness (λ = KLu/r)</td>
+            <td style="{_n}">λ = {_lambda:.1f} {'≤' if _lambda <= 100 else '>'} 100 &nbsp;--->&nbsp; {_ok_ng(_lambda_ok)}</td></tr>
+        </table></div>
+        """, unsafe_allow_html=True)
+
+    # ── Check Flexure Capacity ──
+    _phi_Pn_max = rd.get('phi_Pn_max', 0)
+    _phi_Mnx = rd.get('phi_Mnx', 0)
+    _phi_Mny = rd.get('phi_Mny', 0)
+    _Rcom = rd.get('Rcom', 0)
+    _ok_Rcom = rd.get('ok_Rcom', True)
+    _ok_pm = col_data.get('ok_pm', False)
+
+    _src = col_data.get('src_data', {})
+    with st.container(border=True):
+        st.markdown("#### ◆ Check Flexure Capacity ◆")
+
+        # SRC 추가 정보
+        if _src.get('is_src'):
+            st.markdown(f"""
+            <div class="best-tbl"><table style="width:100%; border-collapse:collapse;">
+            <tr><td style="{_nl}">C₁ = 0.1 + 2.0(A_s/(A_c+A_s))</td><td style="{_n}">= {_src.get('C1', 0):.3f}</td></tr>
+            <tr><td style="{_nl}">EI_eff = E_s·I_s + 0.5E_s·I_sr + C₁·E_c·I_c</td><td style="{_n}">= {_src.get('EIeff_kNm2', 0):.0f} kN·m²</td></tr>
+            <tr><td style="{_nl}">P_o = A_s·F_y,Stl + A_sr·F_y,Bar + 0.85A_c·f_ck</td><td style="{_n}">= {_src.get('Po_kN', 0):.0f} kN</td></tr>
+            <tr><td style="{_nl}">P_e = π²EI_eff/(KL)²</td><td style="{_n}">= {_src.get('Pe_kN', 0):.0f} kN</td></tr>
+            </table></div>
+            """, unsafe_allow_html=True)
+
+        # X-X Axis
+        st.markdown(f"""
+        <div class="best-tbl"><table style="width:100%; border-collapse:collapse;">
+        <tr><td style="{_n}" colspan="2"><b>X-X Axis</b></td></tr>
+        <tr><td style="{_nl}">ΦP_n(max)</td>
+            <td style="{_n}">= {_phi_Pn_max:.1f} kN {'>' if _phi_Pn_max >= _Pu else '<'} P_u = {_Pu:.1f} kN &nbsp;--->&nbsp; {_ok_ng(_phi_Pn_max >= _Pu)}</td></tr>
+        <tr><td style="{_nl}">ΦM_nx</td><td style="{_n}">= {_phi_Mnx:.1f} kN·m</td></tr>
+        <tr><td style="{_n}" colspan="2"><b>Y-Y Axis</b></td></tr>
+        <tr><td style="{_nl}">ΦP_n(max)</td>
+            <td style="{_n}">= {_phi_Pn_max:.1f} kN {'>' if _phi_Pn_max >= _Pu else '<'} P_u = {_Pu:.1f} kN &nbsp;--->&nbsp; {_ok_ng(_phi_Pn_max >= _Pu)}</td></tr>
+        <tr><td style="{_nl}">ΦM_ny</td><td style="{_n}">= {_phi_Mny:.1f} kN·m</td></tr>
+        <tr><td style="{_n}" colspan="2">&nbsp;</td></tr>
+        <tr><td style="{_nl}">R_com = M_ux/ΦM_nx + M_uy/ΦM_ny</td>
+            <td style="{_n}">= {_Rcom:.3f} {'<' if _Rcom <= 1.0 else '>'} 1.000 &nbsp;--->&nbsp; {_ok_ng(_ok_Rcom)}</td></tr>
+        </table></div>
+        """, unsafe_allow_html=True)
+
+    # ── P-M 다이어그램 (X-X, Y-Y 나란히) ──
+    with st.container(border=True):
+        st.markdown("#### ◆ X-X Axis / Y-Y Axis ◆")
+        _pm_col1, _pm_col2 = st.columns(2)
+        try:
+            from visualization import plot_pm_diagram
+            # X-X
+            with _pm_col1:
+                _rdx = dict(rd)
+                _rdx['pm_curve_P'] = rd.get('pm_curve_Px')
+                _rdx['pm_curve_M'] = rd.get('pm_curve_Mx')
+                _rdx['pm_nominal_P'] = rd.get('pm_nominal_Px')
+                _rdx['pm_nominal_M'] = rd.get('pm_nominal_Mx')
+                _rdx['Mu_design'] = abs(_Mux)
+                _amx = {'Pu': _Pu}
+                fig_pmx = plot_pm_diagram(_rdx, _amx)
+                fig_pmx.update_layout(title='X-X Axis', height=350)
+                st.plotly_chart(fig_pmx, use_container_width=True, key=f"rv_pmx_{_name}")
+            # Y-Y
+            with _pm_col2:
+                _rdy = dict(rd)
+                _rdy['pm_curve_P'] = rd.get('pm_curve_Py')
+                _rdy['pm_curve_M'] = rd.get('pm_curve_My')
+                _rdy['pm_nominal_P'] = rd.get('pm_nominal_Py')
+                _rdy['pm_nominal_M'] = rd.get('pm_nominal_My')
+                _rdy['Mu_design'] = abs(_Muy)
+                _amy = {'Pu': _Pu}
+                fig_pmy = plot_pm_diagram(_rdy, _amy)
+                fig_pmy.update_layout(title='Y-Y Axis', height=350)
+                st.plotly_chart(fig_pmy, use_container_width=True, key=f"rv_pmy_{_name}")
+        except Exception as _e_pm:
+            st.caption(f"⚠️ P-M 다이어그램: {_e_pm}")
+
+    # ── Check Shear Strength ──
+    _col_sh = col_data.get('col_shear', {})
+    with st.container(border=True):
+        st.markdown("#### ◆ Check Shear Strength ◆")
+        if _col_sh:
+            _Vu_sh = _col_sh.get('Vu', 0)
+            _phi_Vn_sh = _col_sh.get('phi_Vn', 0)
+            _sh_ratio = _col_sh.get('ratio', 0)
+            _sh_ok = _col_sh.get('ok', True)
+            if _col_sh.get('is_src'):
+                # SRC 전단
+                _Vn_stl = _col_sh.get('Vn_stl', 0)
+                _Vn_rebar = _col_sh.get('Vn_rebar', 0)
+                st.markdown(f"""
+                <div class="best-tbl"><table style="width:100%; border-collapse:collapse;">
+                <tr><td style="{_nl}">Applied Shear Force : V_u</td><td style="{_n}">= {_Vu_sh:.2f} kN</td></tr>
+                <tr><td style="{_nl}">V_n = 0.6·F_y·A_w + F_y,Bar·A_s,Bar·(d/s)</td><td style="{_n}">= {(_Vn_stl + _Vn_rebar):.2f} kN</td></tr>
+                <tr><td style="{_nl}">ΦV_n = Φ·V_n</td><td style="{_n}">= {_phi_Vn_sh:.2f} kN</td></tr>
+                <tr><td style="{_nl}">V_u/ΦV_n = {_sh_ratio:.3f}</td>
+                    <td style="{_n}">{'<' if _sh_ratio <= 1.0 else '>'} 1.000 &nbsp;--->&nbsp; {_ok_ng(_sh_ok)}</td></tr>
+                </table></div>
+                """, unsafe_allow_html=True)
+            else:
+                # RC 전단
+                _phi_Vc_sh = _col_sh.get('phi_Vc', 0)
+                _phi_Vs_sh = _col_sh.get('phi_Vs', 0)
+                st.markdown(f"""
+                <div class="best-tbl"><table style="width:100%; border-collapse:collapse;">
+                <tr><td style="{_nl}">Applied Shear Force : V_u</td><td style="{_n}">= {_Vu_sh:.2f} kN</td></tr>
+                <tr><td style="{_nl}">ΦV_c (concrete)</td><td style="{_n}">= {_phi_Vc_sh:.2f} kN</td></tr>
+                <tr><td style="{_nl}">ΦV_s (rebar)</td><td style="{_n}">= {_phi_Vs_sh:.2f} kN</td></tr>
+                <tr><td style="{_nl}">ΦV_n = ΦV_c + ΦV_s</td><td style="{_n}">= {_phi_Vn_sh:.2f} kN</td></tr>
+                <tr><td style="{_nl}">V_u/ΦV_n = {_sh_ratio:.3f}</td>
+                    <td style="{_n}">{'<' if _sh_ratio <= 1.0 else '>'} 1.000 &nbsp;--->&nbsp; {_ok_ng(_sh_ok)}</td></tr>
+                </table></div>
+                """, unsafe_allow_html=True)
+        else:
+            st.caption("전단력(Vu) 미입력")
+
+    # 경고/검토 불가
+    na = col_data.get('not_available', {})
+    if na:
+        _na_text = "\n".join([f"- **{key}**: {msg}" for key, msg in na.items()])
+        st.warning(f"**검토 불가 항목**\n\n{_na_text}")
+
+
 def _render_review_column_detail(col_data):
-    """기둥 1개의 검토 결과 상세."""
+    """기둥 1개의 검토 결과 상세 (BeST/기본 분기)."""
+    # BeST 분기
+    _name = col_data.get('name', '')
+    if 'BeST' in _name or 'Steel' in _name:
+        _render_best_column_detail(col_data)
+        return
+
     rd = col_data.get('rebar_design', {})
     sl = col_data.get('slenderness', {})
     tie = col_data.get('tie_rebar_design', {})

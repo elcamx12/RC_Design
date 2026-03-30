@@ -193,6 +193,117 @@ def plot_column_section(c_column, n_col, rebar_type_col, rebar_dia, tie_type, ti
     fig.tight_layout()
     return fig
 
+def plot_best_column_section(c_column, n_col, rebar_dia, cover, tie_dia,
+                             steel_section_str=''):
+    """BeST.Steel 스타일 기둥 단면도.
+    - 연노랑 배경 + 파란 외곽선
+    - 빨간 점 (철근, 4변 둘레)
+    - 주황 선 (띠철근)
+    - 중앙 사각형 (SRC 강재)
+    - 외부 치수선 (mm)
+    """
+    CLR_BG = '#FFFFCC'
+    CLR_OUTLINE = '#2255CC'
+    CLR_STIRRUP = '#CC6600'
+    CLR_REBAR = '#CC0000'
+    CLR_DIM = '#333333'
+    CLR_STEEL = '#666666'
+
+    fig, ax = plt.subplots(1, 1, figsize=(3, 3), dpi=100)
+    ax.set_aspect('equal')
+    ax.axis('off')
+
+    # 콘크리트
+    ax.add_patch(mpatches.Rectangle((0, 0), c_column, c_column,
+                 facecolor=CLR_BG, edgecolor=CLR_OUTLINE, linewidth=2.5))
+
+    # 띠철근
+    off = cover + tie_dia + rebar_dia / 2
+    stir_x0 = cover + tie_dia
+    stir_w = c_column - 2 * (cover + tie_dia)
+    if stir_w > 0:
+        ax.add_patch(mpatches.Rectangle((stir_x0, stir_x0), stir_w, stir_w,
+                     facecolor='none', edgecolor=CLR_STIRRUP, linewidth=1.0))
+
+    # 주철근 (4변 둘레 배치)
+    r_vis = 4.0
+    n_base = n_col // 4 + 1
+    n_extra = n_col % 4
+    n_long = n_base + (1 if n_extra >= 2 else 0)
+    pos_long = np.linspace(off, c_column - off, n_long) if n_long > 1 else [c_column / 2]
+    pos_base = np.linspace(off, c_column - off, n_base) if n_base > 1 else [c_column / 2]
+
+    rebar_coords = set()
+    for px in pos_long:
+        rebar_coords.add((px, off))
+        rebar_coords.add((px, c_column - off))
+    if n_base > 2:
+        for py in list(pos_base)[1:-1]:
+            rebar_coords.add((off, py))
+            rebar_coords.add((c_column - off, py))
+
+    for x, y in rebar_coords:
+        ax.add_patch(mpatches.Circle((x, y), r_vis,
+                     facecolor=CLR_REBAR, edgecolor=CLR_REBAR, linewidth=0.5))
+
+    # SRC 강재 (각관: 외곽 회색 + 내부 흰색)
+    if steel_section_str:
+        import re as _re
+        m = _re.match(r'[ㅁ□]\s*[-‐]\s*(\d+)\s*[x×]\s*(\d+)\s*[x×]\s*(\d+)\s*[x×]\s*(\d+)', steel_section_str)
+        if m:
+            _sb = float(m.group(1))   # 외폭
+            _sh = float(m.group(2))   # 외높
+            _tv = float(m.group(3))   # 수직 두께
+            _th = float(m.group(4))   # 수평 두께
+            _sx = (c_column - _sb) / 2
+            _sy = (c_column - _sh) / 2
+            # 외곽 (회색 채움)
+            ax.add_patch(mpatches.Rectangle((_sx, _sy), _sb, _sh,
+                         facecolor='#E0E0E0', edgecolor=CLR_STEEL, linewidth=1.0))
+            # 내부 빈 공간 (흰색)
+            _inner_w = _sb - 2 * _tv
+            _inner_h = _sh - 2 * _th
+            if _inner_w > 0 and _inner_h > 0:
+                ax.add_patch(mpatches.Rectangle((_sx + _tv, _sy + _th), _inner_w, _inner_h,
+                             facecolor='white', edgecolor=CLR_STEEL, linewidth=0.5))
+
+    # 치수선
+    _tick = 5; _dim_off = 15
+    _loc = off  # Loc = cover + stirrup + rebar/2
+
+    # 하단: 폭
+    _y_bot = -_dim_off
+    ax.plot([0, c_column], [_y_bot, _y_bot], color=CLR_DIM, linewidth=0.8)
+    for _x in [0, c_column]:
+        ax.plot([_x, _x], [_y_bot - _tick, _y_bot + _tick], color=CLR_DIM, linewidth=0.8)
+        ax.plot(_x, _y_bot, 'o', color=CLR_DIM, markersize=2)
+    ax.text(c_column / 2, _y_bot - 8, f'{int(c_column)}', fontsize=7, ha='center', va='top', color=CLR_DIM)
+
+    # 왼쪽: 전체 높이 (바깥쪽, 더 왼쪽)
+    _x_left_outer = -_dim_off - 22
+    ax.plot([_x_left_outer, _x_left_outer], [0, c_column], color=CLR_DIM, linewidth=0.8)
+    for _y in [0, c_column]:
+        ax.plot([_x_left_outer - _tick, _x_left_outer + _tick], [_y, _y], color=CLR_DIM, linewidth=0.8)
+        ax.plot(_x_left_outer, _y, 'o', color=CLR_DIM, markersize=2)
+    ax.text(_x_left_outer - 8, c_column / 2, f'{int(c_column)}', fontsize=7, ha='right', va='center',
+            rotation=90, color=CLR_DIM)
+
+    # 왼쪽: Loc (안쪽, 살짝 오른쪽)
+    _x_left_loc = -_dim_off + 3
+    ax.plot([_x_left_loc, _x_left_loc], [0, _loc], color=CLR_DIM, linewidth=0.8)
+    for _y in [0, _loc]:
+        ax.plot([_x_left_loc - _tick, _x_left_loc + _tick], [_y, _y], color=CLR_DIM, linewidth=0.8)
+        ax.plot(_x_left_loc, _y, 'o', color=CLR_DIM, markersize=2)
+    ax.text(_x_left_loc - 8, _loc / 2, f'{_loc:.0f}', fontsize=6, ha='right', va='center',
+            rotation=90, color=CLR_DIM)
+
+    ax.set_xlim(-55, c_column + 15)
+    ax.set_ylim(-30, c_column + 15)
+    fig.tight_layout(pad=0.1)
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.98, bottom=0.02)
+    return fig
+
+
 def plot_column_side_view(h_column, c_column, tie_spacing, tie_dia, rebar_dia):
     """기둥 측면 — Matplotlib 렌더링"""
     fig, ax = plt.subplots(1, 1, figsize=(4, 7), dpi=150)

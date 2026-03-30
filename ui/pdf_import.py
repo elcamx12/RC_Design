@@ -382,7 +382,8 @@ def _render_auto_analysis(uploaded):
             "software": c.source,
             "section": {"B_mm": None, "H_mm": None, "Cx_mm": c.Cx_mm, "Cy_mm": c.Cy_mm,
                         "clear_cover_mm": c.clear_cover_mm},
-            "material": {"fck_MPa": c.fck, "fy_MPa": c.fy},
+            "material": {"fck_MPa": c.fck, "fy_MPa": c.fy, "fy_stl_MPa": c.fys},
+            "steel_section": c.steel_section,
             "geometry": {"span_m": None, "height_m": c.height_m},
             "design_forces": {
                 "Pu_kN": c.Pu_kN, "Mux_kNm": c.Mux_kNm, "Muy_kNm": c.Muy_kNm,

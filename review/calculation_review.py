@@ -66,6 +66,35 @@ def _round_down_50(value):
     return max(np.floor(value / 50.0) * 50.0, 100.0)
 
 
+def _parse_steel_section(section_str):
+    """SRC 강재 각관 섹션 파싱. 'ㅁ-26x26x11x11' → dict.
+    형식: ㅁ-B×H×tv×th (mm 단위)
+    반환: {B, H, tv, th, As, Ix, Iy, Aw} 또는 None
+    """
+    import re as _re
+    if not section_str:
+        return None
+    s = str(section_str).strip()
+    # "ㅁ-26x26x11x11" 또는 "ㅁ-26x26x11x11" (여러 구분자)
+    m = _re.match(r'[ㅁ□]\s*[-‐]\s*(\d+)\s*[x×]\s*(\d+)\s*[x×]\s*(\d+)\s*[x×]\s*(\d+)', s)
+    if not m:
+        return None
+    B = float(m.group(1))   # mm
+    H = float(m.group(2))   # mm
+    tv = float(m.group(3))  # 수직 두께 (mm)
+    th = float(m.group(4))  # 수평 두께 (mm)
+    if B <= 2 * tv or H <= 2 * th:
+        return None
+    # 단면적
+    As = B * H - (B - 2 * tv) * (H - 2 * th)
+    # 관성모멘트
+    Ix = B * H ** 3 / 12.0 - (B - 2 * tv) * (H - 2 * th) ** 3 / 12.0
+    Iy = H * B ** 3 / 12.0 - (H - 2 * th) * (B - 2 * tv) ** 3 / 12.0
+    # 웹 면적 (전단용): 양쪽 웹 × 전체 높이 (BeST.Steel 기준)
+    Aw = 2 * tv * H
+    return {'B': B, 'H': H, 'tv': tv, 'th': th, 'As': As, 'Ix': Ix, 'Iy': Iy, 'Aw': Aw}
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # 보 검토 — 휨 설계
 # ═══════════════════════════════════════════════════════════════════════
@@ -660,7 +689,7 @@ def _review_beam_location(Mu_neg, Mu_pos, Vu, b, h, fc_k, fy, cover=40.0,
                            Loc_top=None, Loc_bot=None,
                            rebar_top_str=None, rebar_bot_str=None,
                            stirrup_str=None, skin_rebar_str=None,
-                           b_top=0, h_top=0):
+                           b_top=0, h_top=0, use_detailed_shear=True):
     """
     단일 위치 (END-I / MID / END-J) 검토.
     구조계산서 배근(rebar_top_str/rebar_bot_str)이 주어지면 그걸로 φMn 계산.
@@ -670,6 +699,25 @@ def _review_beam_location(Mu_neg, Mu_pos, Vu, b, h, fc_k, fy, cover=40.0,
         dict with flexural_neg, flexural_pos, shear, ok_overall
     """
     result = {}
+
+    # 방어: fck=0 또는 fy=0이면 빈 결과 반환
+    if fc_k <= 0 or fy <= 0 or b <= 0 or h <= 0:
+        _empty = {'Mu': 0, 'As_req': 0, 'rebar_string': '-', 'As_provided': 0,
+                  'phi_Mn': 0, 'phi': 0, 'a': 0, 'c': 0, 'epsilon_t': 0,
+                  'cb': 0, 'Ts_kN': 0, 'Cs_kN': 0, 'Cc_kN': 0,
+                  'Mcr_kNm': 0, '1.2Mcr': 0, 'ok_12Mcr': True,
+                  'ok': False, 'check_ratio': 999,
+                  'warnings': ['오류: fck, fy, b, h 중 0 이하 값이 있습니다.'],
+                  'flexural_steps': {}}
+        result['flexural_neg'] = _empty.copy()
+        result['flexural_pos'] = _empty.copy()
+        result['shear'] = {'Vu': 0, 's': 0, 'phi_Vc': 0, 'phi_Vs': 0,
+                           'phi_Vs_req': 0, 'phi_Vs_provided': 0,
+                           'ok': False, 'warnings': [], 'shear_steps': {}}
+        result['crack'] = {'fs': 0, 'cc': 0, 's_rebar': 0, 'smax': 0, 'ok': False}
+        result['ok_overall'] = False
+        return result
+
     _alpha1, _beta1_local = _get_alpha1_beta1(fc_k)  # KDS 14 20 20 표 4.1-2
 
     # 1.2Mcr 계산 (KDS 14 20 20)  # fr = 0.63√fck, Mcr = fr×Ig/yt
@@ -880,13 +928,16 @@ def _review_beam_location(Mu_neg, Mu_pos, Vu, b, h, fc_k, fy, cover=40.0,
         'flexural_steps': steps_pos,
     }
 
-    # 전단 (상세식: As_tension과 Mu 전달)
+    # 전단: BeST=상세식, MIDAS=간편식
     d_for_shear = steps_neg.get('d', h - 60.0)
-    _As_tens_for_shear = _neg_As_prov if _neg_As_prov > 0 else (As_doc_top_with_skin if As_doc_top > 0 else 0)
-    _Mu_for_shear = abs(Mu_neg) if abs(Mu_neg) > 0 else abs(Mu_pos)
-    s_final, warn_shear, steps_shear = _review_shear(
-        Vu, b, d_for_shear, fc_k,
-        As_tension=_As_tens_for_shear, Mu=_Mu_for_shear)
+    if use_detailed_shear:
+        _As_tens_for_shear = _neg_As_prov if _neg_As_prov > 0 else (As_doc_top_with_skin if As_doc_top > 0 else 0)
+        _Mu_for_shear = abs(Mu_neg) if abs(Mu_neg) > 0 else abs(Mu_pos)
+        s_final, warn_shear, steps_shear = _review_shear(
+            Vu, b, d_for_shear, fc_k,
+            As_tension=_As_tens_for_shear, Mu=_Mu_for_shear)
+    else:
+        s_final, warn_shear, steps_shear = _review_shear(Vu, b, d_for_shear, fc_k)
     _shear_phi = steps_shear.get('phi', 0.75)
     _phi_Vc = _shear_phi * steps_shear.get('Vc_N', 0) / 1000.0  # N → kN
     _Vs_actual = steps_shear.get('Vs_N', 0)
@@ -985,6 +1036,7 @@ def _review_beam(beam_input, fc_k, fy):
             skin_rebar_str=beam_input.get('skin_rebar', ''),
             b_top=float(beam_input.get('b_top', 0) or 0),
             h_top=float(beam_input.get('h_top', 0) or 0),
+            use_detailed_shear='BeST' in beam_input.get('software', ''),
         )
 
     # 전체 OK 판정
@@ -1079,11 +1131,19 @@ def _review_column(col_input, fc_k, fy):
     if c_column <= 0:
         c_column = 400.0  # 기본값 400mm
     Pu = float(col_input.get('Pu', 0))
-    Mux = float(col_input.get('Mux', 0))
-    Muy = float(col_input.get('Muy', 0))
+    Mux_input = float(col_input.get('Mux', 0))  # 원본 입력값
+    Muy_input = float(col_input.get('Muy', 0))  # 원본 입력값
+    Mux = Mux_input
+    Muy = Muy_input
+    Vu_col = float(col_input.get('Vu', 0))
     Mu = float(np.sqrt(Mux ** 2 + Muy ** 2))  # SRSS
 
     Ag = c_column * c_column
+
+    # SRC 판단 (세장비 검토 전에 필요)
+    _steel_str_early = col_input.get('steel_section', '')
+    _fy_stl_early = float(col_input.get('fy_stl', 0) or 0)
+    _is_src_early = bool(_steel_str_early and _fy_stl_early > 0 and _parse_steel_section(_steel_str_early))
 
     # ── 세장비 검토 ──
     k = 1.0
@@ -1107,7 +1167,12 @@ def _review_column(col_input, fc_k, fy):
         'EI': EI, 'Pc_kN': Pc_kN, 'Cm': Cm,
     }
 
-    if lambda_ratio <= 22:
+    if _is_src_early:
+        # SRC: 좌굴은 Pe 기반으로 ΦPn(max)에 이미 반영됨. δ_ns 미적용
+        slenderness['category'] = 'src_buckling'
+        slenderness['delta_ns'] = 1.0
+        slenderness['ok'] = True
+    elif lambda_ratio <= 22:
         slenderness['category'] = 'short'
         slenderness['delta_ns'] = 1.0
         slenderness['ok'] = True
@@ -1129,8 +1194,18 @@ def _review_column(col_input, fc_k, fy):
         slenderness['ok'] = False
 
     # ── 입력 배근 파싱 (검토 모드: 자동 탐색 없음) ──
-    phi_comp = 0.65
-    phi_tens = 0.85
+    # SRC: 강구조 기준 φ (KBC 0709)
+    # RC: 콘크리트 기준 φ (KDS 14 20 20)
+    steel_section_str = col_input.get('steel_section', '')
+    fy_stl = float(col_input.get('fy_stl', 0) or 0)
+    stl = _parse_steel_section(steel_section_str) if steel_section_str else None
+    is_src = stl is not None and fy_stl > 0
+    if is_src:
+        phi_comp = 0.90  # SRC: P-M 곡선 전체 φ=0.90 (KBC 강구조)
+        phi_tens = 0.90
+    else:
+        phi_comp = 0.65
+        phi_tens = 0.85
     alpha1, beta1 = _get_alpha1_beta1(fc_k)  # KDS 14 20 20 표 4.1-2
 
     _col_cover = float(col_input.get('cover', 40.0))
@@ -1158,26 +1233,95 @@ def _review_column(col_input, fc_k, fy):
 
     # ── 입력 배근 기반 P-M 검토 (1회, 탐색 없음) ──
     As_total = n_col * rebar_area_col
+    As_stl = stl['As'] if is_src else 0.0
+    Ac = Ag - As_total - As_stl if is_src else Ag - As_total  # 콘크리트 순면적
     rho = As_total / Ag if Ag > 0 else 0
 
     cover_approx = _col_cover + _tie_dia_c + rebar_diameter_col / 2.0
     d_eff = c_column - cover_approx
     d_prime = cover_approx
     As_half = As_total / 2.0
+
+    # SRC: EIeff 재계산 + 좌굴 검토 덮어쓰기
+    src_data = {}
+    if is_src:
+        _Es = 200000.0
+        # 철근 관성모멘트 (정밀: 각 철근 위치별 Σ A_bar × y_i²)
+        # 정사각형 둘레 배치: n_col개 철근, 각 변에 n_per_side개
+        _Ab = rebar_area_col  # 1개 면적
+        _d_edge = _col_cover + _tie_dia_c + rebar_diameter_col / 2.0  # 연단~철근 중심
+        _h2 = c_column / 2.0
+        _n_side = int(np.ceil(n_col / 4)) + 1 if n_col > 0 else 2
+        Isr = 0.0
+        # 상변/하변 철근: y = ±(_h2 - _d_edge)
+        _y_top = _h2 - _d_edge
+        _y_bot = -(_h2 - _d_edge)
+        # 좌변/우변 철근: x = ±(_h2 - _d_edge)
+        _x_side = _h2 - _d_edge
+        # 상변: _n_side개
+        for _i in range(_n_side):
+            Isr += _Ab * _y_top ** 2  # y 기준 관성모멘트 (X-X)
+        # 하변: _n_side개
+        for _i in range(_n_side):
+            Isr += _Ab * _y_bot ** 2
+        # 좌/우변: 각 (_n_side - 2)개 (코너 중복 제외)
+        _n_web = max(_n_side - 2, 0)
+        if _n_web > 0:
+            for _j in range(_n_web):
+                _y_j = _y_bot + (_y_top - _y_bot) * (_j + 1) / (_n_web + 1)
+                Isr += _Ab * _y_j ** 2  # 좌변
+                Isr += _Ab * _y_j ** 2  # 우변
+        Ic = c_column ** 4 / 12.0 - stl['Ix'] - Isr
+        if Ic < 0:
+            Ic = c_column ** 4 / 12.0 * 0.5  # 안전장치
+        C1 = 0.1 + 2.0 * (As_stl / (Ac + As_stl)) if (Ac + As_stl) > 0 else 0.1
+        EIeff = _Es * stl['Ix'] + 0.5 * _Es * Isr + C1 * Ec * Ic  # N·mm²
+        Pe_N = np.pi ** 2 * EIeff / (k * l_u) ** 2
+        Pe_kN = Pe_N / 1000.0
+
+        # Po (SRC)
+        Po_N = As_stl * fy_stl + As_total * fy + 0.85 * fc_k * Ac
+        Po_kN = Po_N / 1000.0
+
+        # ΦPn(max) (SRC 좌굴 공식)
+        if Pe_N >= 0.44 * Po_N:
+            Pn_src = Po_N * 0.658 ** (Po_N / Pe_N)
+        else:
+            Pn_src = 0.877 * Pe_N
+        phi_Pn_max_src = 0.75 * Pn_src / 1000.0  # kN
+
+        # 세장비 dict 덮어쓰기
+        slenderness['EIeff_src'] = EIeff / 1e6  # kN·m²
+        slenderness['Pe_kN'] = Pe_kN
+        slenderness['Po_kN'] = Po_kN
+        slenderness['C1'] = C1
+
+        src_data = {
+            'is_src': True, 'steel_section': steel_section_str, 'fy_stl': fy_stl,
+            'As_stl': As_stl, 'Ac': Ac, 'C1': C1,
+            'EIeff_kNm2': EIeff / 1e9, 'Pe_kN': Pe_kN, 'Po_kN': Po_kN,
+            'phi_Pn_max_src': phi_Pn_max_src,
+        }
     h_half = c_column / 2.0
 
     # 점 A: 순수 압축  # KDS 41 20 22 4.3.3
-    Pn_max = alpha1 * fc_k * (Ag - As_total) + fy * As_total
-    phi_Pn_max = 0.80 * phi_comp * Pn_max / 1000.0
+    if is_src:
+        Pn_max = src_data['Po_kN'] * 1000.0  # N (Po)
+        phi_Pn_max = src_data['phi_Pn_max_src']  # kN (SRC 좌굴 공식)
+    else:
+        Pn_max = alpha1 * fc_k * (Ag - As_total) + fy * As_total
+        phi_Pn_max = 0.80 * phi_comp * Pn_max / 1000.0
 
-    # 점 B: 균형 파괴
-    c_b = (600.0 / (600.0 + fy)) * d_eff
-    a_b = beta1 * c_b
-    fs_prime = min(600.0 * (c_b - d_prime) / c_b, fy)
-    Pn_b = (alpha1 * fc_k * a_b * c_column + As_half * fs_prime - As_half * fy)
-    Mn_b = (alpha1 * fc_k * a_b * c_column * (h_half - a_b / 2.0)
-            + As_half * fs_prime * (h_half - d_prime)
-            + As_half * fy * (d_eff - h_half))
+    # 점 B: 균형 파괴  # KDS 14 20 20
+    ecu = _get_epsilon_cu(fc_k)
+    _Es = 200000.0
+    _ecu_Es = ecu * _Es
+    eps_y_col = fy / _Es
+    c_b = (ecu / (ecu + eps_y_col)) * d_eff
+    _stl_arg = stl if is_src else None
+    _fystl_arg = fy_stl if is_src else 0
+    Pn_b, Mn_b = _src_forces_at_c(c_b, c_column, d_eff, d_prime, As_half,
+                                    alpha1, beta1, fc_k, fy, _ecu_Es, _stl_arg, _fystl_arg)
     phi_Pn_b = phi_comp * Pn_b / 1000.0
     phi_Mn_b = phi_comp * Mn_b / 1e6
 
@@ -1185,9 +1329,8 @@ def _review_column(col_input, fc_k, fy):
     _c_lo, _c_hi = 1e-6, c_column
     for _ in range(60):
         _c_mid = (_c_lo + _c_hi) / 2.0
-        _fs_c = min(max(600.0 * (_c_mid - d_prime) / _c_mid, -fy), fy)
-        _Pn_c = (alpha1 * fc_k * beta1 * _c_mid * c_column
-                 + As_half * _fs_c - As_half * fy)
+        _Pn_c, _ = _src_forces_at_c(_c_mid, c_column, d_eff, d_prime, As_half,
+                                     alpha1, beta1, fc_k, fy, _ecu_Es, _stl_arg, _fystl_arg)
         if _Pn_c < 0.0:
             _c_lo = _c_mid
         else:
@@ -1195,11 +1338,8 @@ def _review_column(col_input, fc_k, fy):
         if _c_hi - _c_lo < 0.01:
             break
     c_o = (_c_lo + _c_hi) / 2.0
-    a_o = beta1 * c_o
-    fs_o = min(max(600.0 * (c_o - d_prime) / c_o, -fy), fy)
-    Mn_o = (alpha1 * fc_k * a_o * c_column * (h_half - a_o / 2.0)
-            + As_half * fs_o * (h_half - d_prime)
-            + As_half * fy * (d_eff - h_half))
+    _, Mn_o = _src_forces_at_c(c_o, c_column, d_eff, d_prime, As_half,
+                                alpha1, beta1, fc_k, fy, _ecu_Es, _stl_arg, _fystl_arg)
     phi_Mn_o = phi_tens * Mn_o / 1e6
 
     eps_y = fy / 200000.0
@@ -1208,26 +1348,19 @@ def _review_column(col_input, fc_k, fy):
     safe = False
     if Pu <= phi_Pn_max:
         if Pu >= phi_Pn_b:
-            # A-B 구간 (압축지배)
             M_limit = (phi_Pn_max - Pu) * (phi_Mn_b / (phi_Pn_max - phi_Pn_b)) if phi_Pn_max != phi_Pn_b else phi_Mn_b
             if Mu_design <= M_limit:
                 safe = True
         else:
-            # B-C 구간 (인장지배/전이구간)
             N_bc = 50
             c_vals = np.linspace(c_b, 1e-6, N_bc + 1)
             P_prev = phi_Pn_b
             M_prev = phi_Mn_b
             M_limit = phi_Mn_o
             for c_i in c_vals[1:]:
-                a_i = beta1 * c_i
-                fs_p_i = min(max(600.0 * (c_i - d_prime) / c_i, -fy), fy)
-                Pn_i = (alpha1 * fc_k * a_i * c_column
-                        + As_half * fs_p_i - As_half * fy)
-                Mn_i = (alpha1 * fc_k * a_i * c_column * (h_half - a_i / 2.0)
-                        + As_half * fs_p_i * (h_half - d_prime)
-                        + As_half * fy * (d_eff - h_half))
-                eps_t_i = 0.003 * max(d_eff - c_i, 0.0) / c_i
+                Pn_i, Mn_i = _src_forces_at_c(c_i, c_column, d_eff, d_prime, As_half,
+                                               alpha1, beta1, fc_k, fy, _ecu_Es, _stl_arg, _fystl_arg)
+                eps_t_i = ecu * max(d_eff - c_i, 0.0) / c_i
                 if eps_t_i >= 0.005:
                     phi_i = phi_tens
                 elif eps_t_i <= eps_y:
@@ -1245,15 +1378,42 @@ def _review_column(col_input, fc_k, fy):
             if Mu_design <= M_limit:
                 safe = True
 
+    # ── X-X / Y-Y 분리 검토 ──
+    # P-M 곡선에서 Pu에서의 ΦMn 한계값 (정사각형이므로 X=Y 동일)
+    if Pu <= phi_Pn_max and safe:
+        # M_limit은 위에서 이미 계산됨
+        phi_Mnx = M_limit  # X-X 축 ΦMn (Pu에서의 한계)
+        phi_Mny = M_limit  # Y-Y 축 ΦMn (정사각형이므로 동일)
+    else:
+        phi_Mnx = phi_Mn_o if phi_Mn_o > 0 else 0
+        phi_Mny = phi_Mn_o if phi_Mn_o > 0 else 0
+
+    # Rcom = Mux/ΦMnx + Muy/ΦMny (BeST.Steel 검토비)
+    Rcom = 0.0
+    if phi_Mnx > 0 and phi_Mny > 0:
+        Rcom = abs(Mux) / phi_Mnx + abs(Muy) / phi_Mny
+    ok_Rcom = Rcom <= 1.0 if Rcom > 0 else True
+
+    # X-X / Y-Y 분리 P-M 곡선 (정사각형이므로 동일 곡선, 키만 분리)
+    pm_Px, pm_Mx, pm_Pnx, pm_Mnx = _build_pm_curve(
+        c_column, As_total, d_eff, d_prime, beta1, Ag, fc_k, fy,
+        phi_comp, phi_tens, eps_y, stl=stl if is_src else None, fy_stl=fy_stl)
+    pm_Py, pm_My, pm_Pny, pm_Mny = pm_Px, pm_Mx, pm_Pnx, pm_Mnx  # 정사각형
+
     # Bresler 2축 휨 검토  # KDS 41 20 22 4.3.5
     bresler = None
     if Mux > 0 and Muy > 0 and Pu > 0:
         bresler = _bresler_check(
             Pu, Mux, Muy, As_total,
             d_eff, d_prime, beta1, c_column, Ag, fc_k, fy,
-            phi_comp, phi_tens, eps_y)
+            phi_comp, phi_tens, eps_y,
+            stl=stl if is_src else None, fy_stl=fy_stl)
         if not bresler['safe']:
             safe = False
+
+    As_provided_col = As_total
+    rebar_string_col = f"{n_col}-{rebar_type_col}" if n_col > 0 else rebar_vert_str
+    rho_final = rho
 
     # 배근 배치 검토
     _n_per_side = int(np.ceil(n_col / 4)) + 1 if n_col > 0 else 2
@@ -1262,25 +1422,62 @@ def _review_column(col_input, fc_k, fy):
     _req_col = (_n_per_side - 1) * (rebar_diameter_col + _s_min_col)
     _fit_ok = _avail_col >= _req_col
 
-    As_provided_col = As_total
-    rebar_string_col = f"{n_col}-{rebar_type_col}" if n_col > 0 else rebar_vert_str
-    rho_final = rho
-
     # ── P-M 포락선 시각화 데이터 ──
     pm_P, pm_M, pm_Pn, pm_Mn = _build_pm_curve(
         c_column, As_provided_col, d_eff, d_prime, beta1, Ag, fc_k, fy,
-        phi_comp, phi_tens, eps_y)
+        phi_comp, phi_tens, eps_y, stl=stl if is_src else None, fy_stl=fy_stl)
+
+    # ── 기둥 전단 검토 ──
+    col_shear = {}
+    if Vu_col > 0 and d_eff > 0 and is_src:
+        # SRC 전단: Vn = 0.6·Fy,stl·Aw + Fy,Bar·Av·(d/s)
+        _phi_shear = 0.75
+        _Vn_stl = 0.6 * fy_stl * stl['Aw']  # N (강재 웹)
+        _s_n_sh, _s_dia_sh, _s_spacing_sh, _s_Av_sh = _parse_stirrup_string(
+            f"2-{tie_type}@{int(tie_spacing)}")
+        _Vn_rebar = _s_Av_sh * fy * d_eff / tie_spacing if tie_spacing > 0 else 0  # N
+        _Vn_total = _Vn_stl + _Vn_rebar
+        _phi_Vn = _phi_shear * _Vn_total / 1000.0  # kN
+        _shear_ok = Vu_col <= _phi_Vn
+        _shear_ratio = Vu_col / _phi_Vn if _phi_Vn > 0 else 999
+        col_shear = {
+            'Vu': Vu_col, 'phi_Vc': 0, 'phi_Vs': 0,
+            'Vn_stl': _Vn_stl / 1000.0, 'Vn_rebar': _Vn_rebar / 1000.0,
+            'phi_Vn': _phi_Vn, 'ok': _shear_ok, 'ratio': _shear_ratio,
+            'is_src': True,
+        }
+    elif Vu_col > 0 and d_eff > 0:
+        # RC 전단
+        _phi_shear = 0.75
+        _Vc_N = (1.0 / 6.0) * np.sqrt(fc_k) * c_column * d_eff  # N
+        _phi_Vc = _phi_shear * _Vc_N / 1000.0  # kN
+        # 띠철근 기반 Vs
+        _s_n_sh, _s_dia_sh, _s_spacing_sh, _s_Av_sh = _parse_stirrup_string(
+            f"2-{tie_type}@{int(tie_spacing)}")
+        _Vs_N = _s_Av_sh * fy * d_eff / tie_spacing if tie_spacing > 0 else 0
+        _phi_Vs = _phi_shear * _Vs_N / 1000.0  # kN
+        _phi_Vn = _phi_Vc + _phi_Vs
+        _shear_ok = Vu_col <= _phi_Vn
+        _shear_ratio = Vu_col / _phi_Vn if _phi_Vn > 0 else 999
+        col_shear = {
+            'Vu': Vu_col, 'phi_Vc': _phi_Vc, 'phi_Vs': _phi_Vs,
+            'phi_Vn': _phi_Vn, 'ok': _shear_ok, 'ratio': _shear_ratio,
+        }
 
     # 결과 조립
     result = {
         'name': name,
         'c_column': c_column,
         'h_column': h_column,
+        'fc_k': fc_k, 'fy': fy,
+        'cover': _col_cover,
         'Pu': Pu, 'Mux': Mux, 'Muy': Muy, 'Mu': Mu,
+        'Mux_input': Mux_input, 'Muy_input': Muy_input,
         'Mu_design': Mu_design,
         'is_min_ecc_applied': is_min_ecc_applied,
         'e_min': e_min, 'e_actual': e_actual,
         'dimensions': {'c_column': c_column, 'Ag': Ag},
+        'src_data': src_data,  # SRC 강재 정보 (빈 dict이면 RC)
         'rebar_design': {
             'rebar_string_col': rebar_string_col,
             'rebar_vert_input': rebar_vert_str,  # 구조계산서 원본 문자열
@@ -1301,6 +1498,15 @@ def _review_column(col_input, fc_k, fy):
             'fit_ok': _fit_ok,
             'n_per_side': _n_per_side,
             'bresler': bresler,
+            # X-X / Y-Y 분리
+            'phi_Mnx': phi_Mnx,
+            'phi_Mny': phi_Mny,
+            'Rcom': Rcom,
+            'ok_Rcom': ok_Rcom,
+            'pm_curve_Px': pm_Px, 'pm_curve_Mx': pm_Mx,
+            'pm_nominal_Px': pm_Pnx, 'pm_nominal_Mx': pm_Mnx,
+            'pm_curve_Py': pm_Py, 'pm_curve_My': pm_My,
+            'pm_nominal_Py': pm_Pny, 'pm_nominal_My': pm_Mny,
         },
         'slenderness': slenderness,
         'tie_rebar_design': {
@@ -1308,9 +1514,12 @@ def _review_column(col_input, fc_k, fy):
             'tie_rebar_diameter': tie_dia,
             'tie_rebar_spacing': tie_spacing,
         },
+        'col_shear': col_shear,
         'ok_pm': safe,
         'ok_slenderness': slenderness.get('ok', True),
-        'ok_overall': safe and slenderness.get('ok', True) and _fit_ok,
+        'ok_Rcom': ok_Rcom,
+        'ok_shear': col_shear.get('ok', True) if col_shear else True,
+        'ok_overall': safe and slenderness.get('ok', True) and _fit_ok and ok_Rcom and col_shear.get('ok', True) if col_shear else safe and slenderness.get('ok', True) and _fit_ok and ok_Rcom,
         'not_available': {
             'joint_shear': '보 정보 없이 접합부 전단 검토 불가',
             'scwb': '보 Mn 정보 없이 강기둥-약보 검토 불가',
@@ -1325,23 +1534,77 @@ def _review_column(col_input, fc_k, fy):
 # 기둥 — Bresler 이축 휨 검토
 # ═══════════════════════════════════════════════════════════════════════
 
+def _src_forces_at_c(c_mid, c_column, d_eff, d_prime, As_half,
+                     alpha1, beta1, fc_k, fy, _ecu_Es,
+                     stl=None, fy_stl=0):
+    """주어진 중립축 c에서 (Pn, Mn) 계산. SRC면 강재 기여 포함."""
+    h_half = c_column / 2.0
+    a_i = min(beta1 * c_mid, c_column)
+    # 콘크리트
+    Cc = alpha1 * fc_k * a_i * c_column
+    Mc = Cc * (h_half - a_i / 2.0)
+    # 철근
+    fs_p = min(max(_ecu_Es * (c_mid - d_prime) / c_mid, -fy), fy)
+    fs_t = min(max(_ecu_Es * (d_eff - c_mid) / c_mid, -fy), fy)
+    Pr = As_half * fs_p - As_half * fs_t
+    Mr = As_half * fs_p * (h_half - d_prime) + As_half * fs_t * (d_eff - h_half)
+    # 강재 (SRC)
+    Ps = 0.0; Ms = 0.0
+    if stl and fy_stl > 0:
+        _B = stl['B']; _H = stl['H']; _tv = stl['tv']; _th = stl['th']
+        # 상부 플랜지: y = h_half - (h_half - _H/2) = _H/2 from center?
+        # 강재 중심 = 단면 중심 (h_half)
+        # 상부 플랜지 중심: y_top_f = h_half - _H/2 + _th/2 (압축연단 기준)
+        # 아니, 압축연단 = 상단(y=c_column), 하단=0
+        # 강재 중심 = h_half
+        # 상부 플랜지 중심 = h_half + (_H/2 - _th/2)
+        # 하부 플랜지 중심 = h_half - (_H/2 - _th/2)
+        _y_tf = h_half + (_H / 2.0 - _th / 2.0)  # 상부 플랜지 (압축연단에서 먼 쪽)
+        _y_bf = h_half - (_H / 2.0 - _th / 2.0)  # 하부 플랜지 (압축연단에 가까운 쪽)
+        _A_flange = _B * _th  # 플랜지 면적
+        _A_web = 2 * _tv * (_H - 2 * _th)  # 웹 면적 (양쪽)
+        # 각 부분의 변형률 → 응력
+        ecu = _ecu_Es / 200000.0
+        # 상부 플랜지 (d = _y_tf from 압축연단? 아니, 압축연단=상단)
+        # 변형률: ε = εcu × (위치 - c) / c  (위치: 압축연단에서의 거리)
+        # 여기서 좌표: 하단=0, 상단=c_column
+        # 압축연단 = 상단이므로, 압축연단에서의 거리 = c_column - y
+        # ε(y) = εcu × (c_mid - (c_column - y)) / c_mid = εcu × (y - (c_column - c_mid)) / c_mid
+        # 간단하게: 하단=0 기준, 압축연단=c_column
+        # d_from_comp = c_column - y
+        # ε = εcu × (c_mid - d_from_comp) / c_mid
+        _eps_tf = ecu * (c_mid - (c_column - _y_tf)) / c_mid
+        _eps_bf = ecu * (c_mid - (c_column - _y_bf)) / c_mid
+        _eps_web = ecu * (c_mid - (c_column - h_half)) / c_mid  # 웹 중심
+
+        _fs_tf = min(max(_eps_tf * 200000.0, -fy_stl), fy_stl)
+        _fs_bf = min(max(_eps_bf * 200000.0, -fy_stl), fy_stl)
+        _fs_web = min(max(_eps_web * 200000.0, -fy_stl), fy_stl)
+
+        Ps = _A_flange * _fs_tf + _A_flange * _fs_bf + _A_web * _fs_web
+        Ms = (_A_flange * _fs_tf * (_y_tf - h_half)
+              + _A_flange * _fs_bf * (_y_bf - h_half)
+              + _A_web * _fs_web * 0)  # 웹 중심=단면 중심
+
+    Pn = Cc + Pr + Ps
+    Mn = Mc + Mr + Ms
+    return Pn, Mn
+
+
 def _find_Pn_at_eccentricity(e_target, As_total, d_eff, d_prime, beta1,
-                              c_column, Ag, fc_k, fy):
+                              c_column, Ag, fc_k, fy,
+                              stl=None, fy_stl=0):
     """주어진 편심(mm)에서 Pn(N)을 이분법으로 탐색."""
     alpha1, _ = _get_alpha1_beta1(fc_k)
+    _ecu_Es = _get_epsilon_cu(fc_k) * 200000.0
     As_half = As_total / 2.0
     h_half = c_column / 2.0
     c_lo, c_hi = 1e-3, c_column * 3.0
 
     for _ in range(60):
         c_mid = (c_lo + c_hi) / 2.0
-        a_i = min(beta1 * c_mid, c_column)
-        fs_p = min(max(600.0 * (c_mid - d_prime) / c_mid, -fy), fy)
-        fs_t = min(max(600.0 * (d_eff - c_mid) / c_mid, -fy), fy)
-        Pn = (alpha1 * fc_k * a_i * c_column + As_half * fs_p - As_half * fs_t)
-        Mn = (alpha1 * fc_k * a_i * c_column * (h_half - a_i / 2.0)
-              + As_half * fs_p * (h_half - d_prime)
-              + As_half * fs_t * (d_eff - h_half))
+        Pn, Mn = _src_forces_at_c(c_mid, c_column, d_eff, d_prime, As_half,
+                                   alpha1, beta1, fc_k, fy, _ecu_Es, stl, fy_stl)
         if Pn <= 0:
             c_lo = c_mid
             continue
@@ -1356,17 +1619,19 @@ def _find_Pn_at_eccentricity(e_target, As_total, d_eff, d_prime, beta1,
 
 
 def _bresler_check(Pu, Mux, Muy, As_total, d_eff, d_prime, beta1,
-                   c_column, Ag, fc_k, fy, phi_comp, phi_tens, eps_y):
+                   c_column, Ag, fc_k, fy, phi_comp, phi_tens, eps_y,
+                   stl=None, fy_stl=0):
     """Bresler 역수하중법: 1/Pn = 1/Pnx + 1/Pny - 1/Pno"""
     alpha1, _ = _get_alpha1_beta1(fc_k)
     Pu_N = Pu * 1000.0
     ex = Mux * 1e6 / Pu_N if Pu_N > 0 else 0.0
     ey = Muy * 1e6 / Pu_N if Pu_N > 0 else 0.0
 
-    Pnx = _find_Pn_at_eccentricity(ex, As_total, d_eff, d_prime, beta1, c_column, Ag, fc_k, fy)
-    Pny = _find_Pn_at_eccentricity(ey, As_total, d_eff, d_prime, beta1, c_column, Ag, fc_k, fy)
+    Pnx = _find_Pn_at_eccentricity(ex, As_total, d_eff, d_prime, beta1, c_column, Ag, fc_k, fy, stl, fy_stl)
+    Pny = _find_Pn_at_eccentricity(ey, As_total, d_eff, d_prime, beta1, c_column, Ag, fc_k, fy, stl, fy_stl)
     As_half = As_total / 2.0
-    Pno = alpha1 * fc_k * (Ag - As_total) + fy * As_total
+    As_stl = stl['As'] if stl else 0
+    Pno = alpha1 * fc_k * (Ag - As_total - As_stl) + fy * As_total + fy_stl * As_stl if stl else alpha1 * fc_k * (Ag - As_total) + fy * As_total
 
     if Pnx > 0 and Pny > 0 and Pno > 0:
         inv_Pn = 1.0 / Pnx + 1.0 / Pny - 1.0 / Pno
@@ -1394,55 +1659,57 @@ def _bresler_check(Pu, Mux, Muy, As_total, d_eff, d_prime, beta1,
 # ═══════════════════════════════════════════════════════════════════════
 
 def _build_pm_curve(c_column, As_total, d_eff, d_prime, beta1, Ag, fc_k, fy,
-                    phi_comp, phi_tens, eps_y):
-    """P-M 포락선 다점 데이터 생성 (시각화용)."""
+                    phi_comp, phi_tens, eps_y,
+                    stl=None, fy_stl=0):
+    """P-M 포락선 다점 데이터 생성 (시각화용). SRC면 강재 기여 포함."""
     alpha1, _ = _get_alpha1_beta1(fc_k)
+    _ecu_Es = _get_epsilon_cu(fc_k) * 200000.0
     As_half = As_total / 2.0
     h_half = c_column / 2.0
+    As_stl = stl['As'] if stl else 0
 
-    _Pno = alpha1 * fc_k * (Ag - As_total) + fy * As_total
-    _Pn_cap_N = 0.80 * _Pno
-    _phi_Pn_cap = 0.80 * phi_comp * _Pno / 1000.0
+    _Pno = alpha1 * fc_k * (Ag - As_total - As_stl) + fy * As_total + fy_stl * As_stl if stl else alpha1 * fc_k * (Ag - As_total) + fy * As_total
+    _Pn_cap_kN = 0.80 * _Pno / 1000.0  # 공칭 캡
+    _phi_Pn_cap_kN = 0.80 * phi_comp * _Pno / 1000.0  # 설계 캡
 
-    c_b = (600.0 / (600.0 + fy)) * d_eff
-    _c_trans_hi = 0.003 * d_eff / (0.003 + eps_y)
-    _c_trans_lo = 0.003 * d_eff / (0.003 + 0.005)
+    ecu = _get_epsilon_cu(fc_k)
+    _ecu_Es = ecu * 200000.0
 
-    # Pn_cap 경계의 c 탐색
-    _c_bisect_lo, _c_bisect_hi = _c_trans_hi, c_column / beta1 * 2.0
-    for _ in range(40):
-        _c_mid = (_c_bisect_lo + _c_bisect_hi) / 2.0
-        _a_mid = min(beta1 * _c_mid, c_column)
-        _fsp_mid = min(max(600.0 * (_c_mid - d_prime) / _c_mid, -fy), fy)
-        _fst_mid = min(max(600.0 * (d_eff - _c_mid) / _c_mid, -fy), fy)
-        _Pn_mid = (alpha1 * fc_k * _a_mid * c_column + As_half * _fsp_mid - As_half * _fst_mid)
-        if _Pn_mid > _Pn_cap_N:
-            _c_bisect_hi = _c_mid
-        else:
-            _c_bisect_lo = _c_mid
+    # c를 큰 값(순수 압축)부터 작은 값(순수 인장)까지 sweep
+    # 작은 c 영역에 더 많은 점 배치 (곡률이 큰 구간)
+    _c_max = c_column * 3.0
+    _c_min = 1e-3
+    # 대수 간격으로 작은 c에 점 집중
+    _c_arr = np.concatenate([
+        np.linspace(_c_max, c_column, 30, endpoint=False),
+        np.linspace(c_column, c_column * 0.3, 100, endpoint=False),
+        np.linspace(c_column * 0.3, c_column * 0.05, 100, endpoint=False),
+        np.linspace(c_column * 0.05, _c_min, 50),
+    ])
 
-    _c_sweep_hi = _c_bisect_hi
-    _c_zone1 = np.linspace(_c_sweep_hi, _c_trans_hi, 40, endpoint=False)
-    _c_zone2 = np.linspace(_c_trans_hi, _c_trans_lo, 30, endpoint=False)
-    _c_zone3 = np.linspace(_c_trans_lo, 1e-3, 30)
-    _c_arr = np.concatenate([_c_zone1, _c_zone2, _c_zone3])
+    # 순수 인장 점 (c → ∞ 의미: 전단면 인장)
+    _Pt_stl = fy_stl * As_stl if stl else 0
+    _Pt_rebar = fy * As_total
+    _Pn_tension = -(_Pt_rebar + _Pt_stl)  # N (음수)
 
     pm_P, pm_M, pm_Pn, pm_Mn = [], [], [], []
 
     for _c_i in _c_arr:
-        _a_i = min(beta1 * _c_i, c_column)
-        _fsp_i = min(max(600.0 * (_c_i - d_prime) / _c_i, -fy), fy)
-        _fst_i = min(max(600.0 * (d_eff - _c_i) / _c_i, -fy), fy)
-        _Pn_i = (alpha1 * fc_k * _a_i * c_column + As_half * _fsp_i - As_half * _fst_i)
-        _Mn_i = (alpha1 * fc_k * _a_i * c_column * (h_half - _a_i / 2.0)
-                 + As_half * _fsp_i * (h_half - d_prime)
-                 + As_half * _fst_i * (d_eff - h_half))
+        _Pn_i, _Mn_i = _src_forces_at_c(_c_i, c_column, d_eff, d_prime, As_half,
+                                         alpha1, beta1, fc_k, fy, _ecu_Es, stl, fy_stl)
 
-        _Pn_cap = 0.80 * _Pno / 1000.0
-        pm_Pn.append(min(_Pn_i / 1000.0, _Pn_cap))
-        pm_Mn.append(max(_Mn_i / 1e6, 0.0))
+        # 공칭값 (Pn 캡 적용)
+        _Pn_kN = _Pn_i / 1000.0
+        _Mn_kNm = abs(_Mn_i) / 1e6
+        if _Pn_kN > _Pn_cap_kN:
+            # 캡 초과 → Pn=캡, Mn 보간
+            _Mn_kNm = _Mn_kNm * (_Pn_cap_kN / _Pn_kN) if _Pn_kN > 0 else 0
+            _Pn_kN = _Pn_cap_kN
+        pm_Pn.append(_Pn_kN)
+        pm_Mn.append(_Mn_kNm)
 
-        _eps_ti = 0.003 * max(d_eff - _c_i, 0.0) / _c_i
+        # 설계값 (φ 적용 + 캡)
+        _eps_ti = ecu * max(d_eff - _c_i, 0.0) / _c_i if _c_i > 0 else 0.1
         if _eps_ti >= 0.005:
             _phi_i = phi_tens
         elif _eps_ti <= eps_y:
@@ -1450,14 +1717,19 @@ def _build_pm_curve(c_column, As_total, d_eff, d_prime, beta1, Ag, fc_k, fy,
         else:
             _phi_i = phi_comp + (phi_tens - phi_comp) * (_eps_ti - eps_y) / (0.005 - eps_y)
 
-        pm_P.append(min(_phi_i * _Pn_i / 1000.0, _phi_Pn_cap))
-        pm_M.append(max(_phi_i * _Mn_i / 1e6, 0.0))
+        _phiPn_kN = _phi_i * _Pn_i / 1000.0
+        _phiMn_kNm = abs(_phi_i * _Mn_i) / 1e6
+        if _phiPn_kN > _phi_Pn_cap_kN:
+            _phiMn_kNm = _phiMn_kNm * (_phi_Pn_cap_kN / _phiPn_kN) if _phiPn_kN > 0 else 0
+            _phiPn_kN = _phi_Pn_cap_kN
+        pm_P.append(_phiPn_kN)
+        pm_M.append(_phiMn_kNm)
 
-    # 순수인장 점
-    pm_P.append(-0.90 * fy * As_total / 1000.0)
-    pm_M.append(0.0)
-    pm_Pn.append(-fy * As_total / 1000.0)
+    # 순수 인장 점
+    pm_Pn.append(_Pn_tension / 1000.0)
     pm_Mn.append(0.0)
+    pm_P.append(phi_tens * _Pn_tension / 1000.0)
+    pm_M.append(0.0)
 
     return pm_P, pm_M, pm_Pn, pm_Mn
 
