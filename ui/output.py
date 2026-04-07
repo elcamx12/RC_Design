@@ -2075,6 +2075,140 @@ def _render_todo(results, inputs, common, beam_x, beam_y, columns, column):
 # 검토 모드 결과 렌더링
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _render_review_slab_detail(sl):
+    """BeST.RC 1방향 슬래브 검토 결과 상세 — BeST 구조계산서 양식."""
+    st.markdown(
+        '<style>'
+        '.best-tbl table, .best-tbl th, .best-tbl td, .best-tbl tr '
+        '{border:none !important; border-width:0 !important;}'
+        '</style>',
+        unsafe_allow_html=True)
+
+    _n = 'border:none !important; padding:3px 8px; font-size:13px;'
+    _ok_ng = lambda ok: '<span style="color:blue;">O.K.</span>' if ok else '<span style="color:red; font-weight:bold;">N.G.</span>'
+
+    _name = sl.get('name', '')
+    _clean_name = _name.split('[')[0].strip() if '[' in _name else _name
+    _fck = sl['fc_k']
+    _fy = sl['fy']
+    _Lx = sl['Lx']
+    _Ly = sl['Ly']
+    _H = sl['H']
+    _cover = sl['cover']
+    _beta1 = sl['beta1']
+    _d = sl['d']
+    _overall_icon = '✅ O.K.' if sl['ok_overall'] else '❌ N.G.'
+
+    # 헤더
+    st.markdown(
+        f'<div style="border-bottom:2px solid #333; padding-bottom:4px; margin-bottom:12px;">'
+        f'<span style="font-size:13px; color:#888;">BeST.RC</span>'
+        f'&nbsp;&nbsp;&nbsp;<b style="font-size:16px;">MEMBER : {_clean_name}</b>'
+        f'&nbsp;&nbsp;&nbsp;<span style="font-size:14px;">{_overall_icon}</span></div>',
+        unsafe_allow_html=True)
+
+    # ── 1. Design Conditions ──
+    with st.container(border=True):
+        st.markdown(f"""<div class="best-tbl">
+<table style="width:100%; border-collapse:collapse;">
+<tr><td style="{_n}"><b>Design Conditions</b></td><td style="{_n}"></td></tr>
+<tr><td style="{_n}">Material Data</td><td style="{_n}">f_ck = {int(_fck)} N/mm² (β₁ = {_beta1:.3f})</td></tr>
+<tr><td style="{_n}"></td><td style="{_n}">fy = {int(_fy)} MPa</td></tr>
+<tr><td style="{_n}">Slab Dim</td><td style="{_n}">{int(_Lx)} × {int(_Ly)} × {int(_H)} (mm)&emsp;cc = {_cover:.0f} mm</td></tr>
+<tr><td style="{_n}">Edge Beams</td><td style="{_n}">UP: {sl['edge_UP']}&emsp;DN: {sl['edge_DN']}&emsp;LT: {sl['edge_LT']}&emsp;RT: {sl['edge_RT']}</td></tr>
+<tr><td style="{_n}">Boundary</td><td style="{_n}">{sl['boundary']}</td></tr>
+<tr><td style="{_n}">Effective d</td><td style="{_n}">{_d:.1f} mm (H - cover - D10/2)</td></tr>
+</table></div>""", unsafe_allow_html=True)
+
+    # ── 2. Applied Loads ──
+    with st.container(border=True):
+        _Wd = sl['Wd']; _Wl = sl['Wl']; _Wu = sl['Wu']
+        st.markdown(f"""<div class="best-tbl">
+<table style="width:100%; border-collapse:collapse;">
+<tr><td style="{_n}"><b>Applied Loads</b></td><td style="{_n}"></td></tr>
+<tr><td style="{_n}">Dead Load (Wd)</td><td style="{_n}">{_Wd:.2f} kN/m²</td></tr>
+<tr><td style="{_n}">Live Load (Wl)</td><td style="{_n}">{_Wl:.2f} kN/m²</td></tr>
+<tr><td style="{_n}">Factored Load (Wu)</td><td style="{_n}">1.2×{_Wd:.2f} + 1.6×{_Wl:.2f} = <b>{_Wu:.2f} kN/m²</b></td></tr>
+</table></div>""", unsafe_allow_html=True)
+
+    # ── 3. Check Minimum Slab Thickness ──
+    with st.container(border=True):
+        _beta_r = sl['beta']
+        _h_min = sl['h_min']
+        st.markdown(f"""<div class="best-tbl">
+<table style="width:100%; border-collapse:collapse;">
+<tr><td style="{_n}"><b>Check Minimum Slab Thickness</b> (KDS 14 20 22)</td><td style="{_n}"></td></tr>
+<tr><td style="{_n}">β = Ly/Lx</td><td style="{_n}">{int(_Ly)}/{int(_Lx)} = {_beta_r:.4f} {'→ 1방향 슬래브' if _beta_r >= 2.0 else ''}</td></tr>
+<tr><td style="{_n}">Ln (Short)</td><td style="{_n}">{sl['Ln_x']:.1f} mm</td></tr>
+<tr><td style="{_n}">h_req</td><td style="{_n}">{_h_min:.1f} mm</td></tr>
+<tr><td style="{_n}">H = {int(_H)} mm</td><td style="{_n}">{_ok_ng(sl['thk_ok'])}</td></tr>
+</table></div>""", unsafe_allow_html=True)
+
+    # ── 4. Flexure Reinforcement Table ──
+    with st.container(border=True):
+        st.markdown(f'<div class="best-tbl"><b>Flexure Reinforcement</b> (KDS 14 20 22 — 모멘트 계수법)</div>', unsafe_allow_html=True)
+
+        # 테이블 헤더
+        _th = 'border:1px solid #ccc !important; padding:4px 6px; font-size:12px; text-align:center; background:#f0f0f0;'
+        _td = 'border:1px solid #ccc !important; padding:4px 6px; font-size:12px; text-align:center;'
+        _td_ok = lambda ok: f'{_td} color:blue;' if ok else f'{_td} color:red; font-weight:bold;'
+
+        tbl = f"""<table style="width:100%; border-collapse:collapse; margin-top:4px;">
+<tr>
+<th style="{_th}">방향</th><th style="{_th}">위치</th>
+<th style="{_th}">Mu(BeST)</th><th style="{_th}">Mu(독립)</th><th style="{_th}">차이%</th>
+<th style="{_th}">Ast,req</th><th style="{_th}">배근</th><th style="{_th}">As,prov</th>
+<th style="{_th}">φMn</th><th style="{_th}">판정</th>
+</tr>"""
+
+        for pos_key in ['short_cont', 'short_pos', 'long_cont', 'long_pos']:
+            fr = sl['flexure'][pos_key]
+            _mu_b = fr['Mu_best']
+            _mu_i = fr['Mu_independent']
+            _diff = fr['Mu_diff_pct']
+            _ast_req = fr['Ast_req']
+            _combo = fr['combo']
+            _sp = int(fr['spacing'])
+            _as_prov = fr['As_provided']
+            _phi_mn = fr['phi_Mn']
+            _ok = fr['ok']
+            _ok_str = 'O.K.' if _ok else 'N.G.'
+            _ok_color = 'color:blue;' if _ok else 'color:red; font-weight:bold;'
+
+            tbl += f"""<tr>
+<td style="{_td}">{fr['direction']}</td><td style="{_td}">{fr['location']}</td>
+<td style="{_td}">{_mu_b:.2f}</td><td style="{_td}">{_mu_i:.2f}</td>
+<td style="{_td}">{_diff:+.1f}%</td>
+<td style="{_td}">{_ast_req:.0f}</td>
+<td style="{_td}">{_combo}@{_sp}</td>
+<td style="{_td}">{_as_prov:.0f}</td>
+<td style="{_td}">{_phi_mn:.2f}</td>
+<td style="{_td} {_ok_color}">{_ok_str}</td>
+</tr>"""
+
+        # Min Bar 행
+        _rho_min = sl['rho_min']
+        _Ast_min = sl['Ast_min']
+        tbl += f"""<tr>
+<td colspan="5" style="{_td}"><b>Min Bar</b>: ρ_min = {_rho_min:.4f}, Ast_min = {_Ast_min:.0f} mm²/m</td>
+<td colspan="5" style="{_td}">Ast_min = ρ_min × 1000 × H = {_rho_min:.4f} × 1000 × {int(sl['H'])} = {_Ast_min:.0f}</td>
+</tr>"""
+        tbl += "</table>"
+        st.markdown(tbl, unsafe_allow_html=True)
+
+    # ── 5. Check Shear ──
+    with st.container(border=True):
+        sh = sl['shear']
+        st.markdown(f"""<div class="best-tbl">
+<table style="width:100%; border-collapse:collapse;">
+<tr><td style="{_n}"><b>Check Shear</b> (KDS 14 20 22)</td><td style="{_n}"></td></tr>
+<tr><td style="{_n}">Vu,x = Wu×Ln,x/2</td><td style="{_n}">{sl['Wu']:.2f} × {sl['Ln_x']/1000:.3f} / 2 = <b>{sh['Vu_x']:.1f} kN/m</b></td></tr>
+<tr><td style="{_n}">φVc,x = φ(1/6)√fck·b·d</td><td style="{_n}">0.75 × (1/6)√{int(_fck)} × 1000 × {_d:.1f} / 1000 = <b>{sh['phi_Vc_x']:.1f} kN/m</b>&emsp;{_ok_ng(sh['ok_x'])}</td></tr>
+<tr><td style="{_n}">Vu,y = Wu×Ln,y/2</td><td style="{_n}">{sl['Wu']:.2f} × {sl['Ln_y']/1000:.3f} / 2 = <b>{sh['Vu_y']:.1f} kN/m</b></td></tr>
+<tr><td style="{_n}">φVc,y = φ(1/6)√fck·b·d</td><td style="{_n}">0.75 × (1/6)√{int(_fck)} × 1000 × {_d:.1f} / 1000 = <b>{sh['phi_Vc_y']:.1f} kN/m</b>&emsp;{_ok_ng(sh['ok_y'])}</td></tr>
+</table></div>""", unsafe_allow_html=True)
+
+
 def render_review_output_section(results):
     """구조계산서 검토 모드 결과 표시."""
     if not results or results.get('mode') != 'review':
@@ -2102,6 +2236,17 @@ def render_review_output_section(results):
             'TOP': top, 'BOT': bot, 'Stirrup': f"D10@{int(s)}" if isinstance(s, (int, float)) and s > 0 else '-',
             '판정': status,
         })
+    for sl in results.get('review_slabs', []):
+        status = "✅ OK" if sl['ok_overall'] else "❌ NG"
+        # 대표 배근: Short Cont
+        _sc = sl['flexure'].get('short_cont', {})
+        summary_rows.append({
+            '부재': f"��래브 {sl['name']}",
+            '단면': f"{int(sl['Lx'])}×{int(sl['Ly'])}×{int(sl['H'])}",
+            'TOP': f"{_sc.get('combo','D10')}@{int(_sc.get('spacing',300))}", 'BOT': '-',
+            'Stirrup': '-',
+            '판정': status,
+        })
     for col in results.get('review_columns', []):
         status = "✅ OK" if col['ok_overall'] else "❌ NG"
         rd = col.get('rebar_design', {})
@@ -2117,42 +2262,64 @@ def render_review_output_section(results):
         import pandas as _pd
         st.dataframe(_pd.DataFrame(summary_rows), hide_index=True, width='stretch')
 
-    # ── 보 상세 ──
+    # ── 2. 검토 상세 (탭: 슬래브 / 보 / 기둥) ──
+    review_slabs = results.get('review_slabs', [])
     review_beams = results.get('review_beams', [])
-    if review_beams:
-        st.subheader("2. 보 검토 상세")
-        beam_tabs = st.tabs([f"보 {bm['name']}" for bm in review_beams])
-        for tab, bm in zip(beam_tabs, review_beams):
-            with tab:
-                _render_review_beam_detail(bm)
-
-    # ── 기둥 상세 ──
     review_columns = results.get('review_columns', [])
-    if review_columns:
-        st.subheader("3. 기둥 검토 상세")
-        col_tabs = st.tabs([f"기둥 {col['name']}" for col in review_columns])
-        for tab, col_data in zip(col_tabs, review_columns):
-            with tab:
-                _render_review_column_detail(col_data)
+
+    if review_slabs or review_beams or review_columns:
+        st.subheader("2. 검토 상세")
+
+        # 탭 라벨 생성
+        _detail_tab_labels = []
+        _detail_tab_types = []  # ('slab'/'beam'/'col', index)
+        for sl in review_slabs:
+            _detail_tab_labels.append(f"🟢 슬래브 {sl['name']}")
+            _detail_tab_types.append(('slab', sl))
+        for bm in review_beams:
+            _detail_tab_labels.append(f"🔵 보 {bm['name']}")
+            _detail_tab_types.append(('beam', bm))
+        for col_data in review_columns:
+            _detail_tab_labels.append(f"🟠 기둥 {col_data['name']}")
+            _detail_tab_types.append(('col', col_data))
+
+        _detail_tabs = st.tabs(_detail_tab_labels)
+        for _dt, (_dtype, _ddata) in zip(_detail_tabs, _detail_tab_types):
+            with _dt:
+                if _dtype == 'slab':
+                    _render_review_slab_detail(_ddata)
+                elif _dtype == 'beam':
+                    _render_review_beam_detail(_ddata)
+                elif _dtype == 'col':
+                    _render_review_column_detail(_ddata)
 
     # ── 3D 배근도 ──
     frame_3d_data = results.get('frame_3d')
     if frame_3d_data:
-        st.subheader("4. 3D 골조 배근도")
+        st.subheader("3. 3D 골조 배근도")
+        _missing_reasons = frame_3d_data.get('missing_reasons', [])
         try:
             from visualization import plot_3d_frame_rebar
             _compat_results = frame_3d_data['results']
             _compat_inputs = frame_3d_data['inputs']
-            # beam_x, beam_y, column이 모두 있어야 렌더링 가능
-            if 'beam_x' in _compat_results and 'beam_y' in _compat_results and 'column' in _compat_results:
+            # beam_x, beam_y, column + 경간/높이 모두 있어야 렌더링 가능
+            _can_render = (
+                'beam_x' in _compat_results
+                and 'beam_y' in _compat_results
+                and 'column' in _compat_results
+                and _compat_inputs.get('L_x', 0) > 0
+                and _compat_inputs.get('L_y', 0) > 0
+                and _compat_inputs.get('h_column', 0) > 0
+            )
+            if _can_render:
                 fig_3d = plot_3d_frame_rebar(_compat_results, _compat_inputs)
                 st.plotly_chart(fig_3d, use_container_width=True, key="review_3d_rebar")
             else:
-                _missing = []
-                if 'beam_x' not in _compat_results: _missing.append("천장보 X")
-                if 'beam_y' not in _compat_results: _missing.append("천장보 Y")
-                if 'column' not in _compat_results: _missing.append("기둥")
-                st.info(f"3D 배근도를 표시하려면 다음 부재가 매핑되어야 합니다: {', '.join(_missing)}")
+                st.info("3D 배근도를 표시할 수 없습니다. 아래 항목을 확인하세요:")
+                for _reason in _missing_reasons:
+                    st.markdown(f"- {_reason}")
+                if not _missing_reasons:
+                    st.markdown("- 장변보, 단변보, 기둥이 모두 매핑되고, 치수/배근이 입력되어야 합니다.")
         except Exception as e:
             st.warning(f"⚠️ 3D 배근도 렌더링 실패: {e}")
 

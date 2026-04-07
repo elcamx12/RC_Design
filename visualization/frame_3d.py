@@ -587,175 +587,228 @@ def plot_3d_frame_rebar(results, inputs):
                         dev_top=gby.get('dev_top'), dev_bot=gby.get('dev_bot'),
                         stirrup_zones=gby.get('stirrup_zones'))
 
-    # --- 슬래브 철근 배치 (상부층 + 바닥층 공통 루프) ---
+    # --- 슬래브 철근 배치 ---
     vx_slab, vy_slab, vz_slab = [], [], []
     ii_slab, jj_slab, kk_slab = [], [], []
 
     slab_data = results.get('slab')
     if slab_data:
         t_slab = slab_data['design_params']['t_slab']
-        slab_cover = 20.0  # 슬래브 피복두께 (mm)
+        slab_cover = float(slab_data.get('cover', 20.0))
 
-        # 슬래브 배근 문자열 파싱 ("D13@125" → diameter, spacing)
+        # 슬래브 배근 문자열 파싱 — 혼합 콤보 지원 ("D10+D13@200" → avg diameter, spacing)
         def _parse_slab_rebar(rb_str):
             if not rb_str or '@' not in rb_str:
-                return 0, 0, 0
+                return 0, 0
             parts = rb_str.split('@')
-            size_name = parts[0]
-            spacing = float(parts[1])
-            _specs = {"D10": 9.53, "D13": 12.7, "D16": 15.9}
-            diameter = _specs.get(size_name, 10.0)
-            return diameter, spacing, size_name
+            combo = parts[0]
+            try:
+                spacing = float(parts[1])
+            except (ValueError, IndexError):
+                return 0, 0
+            _specs = {"D10": 9.53, "D13": 12.7, "D16": 15.9, "D19": 19.1}
+            if '+' in combo:
+                names = [n.strip() for n in combo.split('+')]
+                dias = [_specs.get(n, 10.0) for n in names]
+                diameter = sum(dias) / len(dias)
+            else:
+                diameter = _specs.get(combo.strip(), 10.0)
+            return diameter, spacing
 
-        db_top, s_top, _ = _parse_slab_rebar(slab_data['rebar_string_top'])
-        db_bot, s_bot, _ = _parse_slab_rebar(slab_data['rebar_string_bot'])
-        db_dist, s_dist, _ = _parse_slab_rebar(slab_data['rebar_string_dist'])
+        # 검토 모드 4겹 vs 설계 모드 3겹 판별
+        _is_review_slab = 'rebar_short_cont' in slab_data
 
-        # 1방향 슬래브: L_short 방향으로 주근 배치, L_long 방향으로 배력근 배치
-        L_short = min(Lx, Ly)
-        # 슬래브 이음길이 (겹이음 반길이)
+        if _is_review_slab:
+            # ── 검토 모드: 4겹 배근 (short_cont/pos + long_cont/pos) ──
+            db_sc, s_sc = _parse_slab_rebar(slab_data['rebar_short_cont'])   # 상부 주근
+            db_sp, s_sp = _parse_slab_rebar(slab_data['rebar_short_pos'])    # 하부 주근
+            db_lc, s_lc = _parse_slab_rebar(slab_data['rebar_long_cont'])    # 상부 배력근
+            db_lp, s_lp = _parse_slab_rebar(slab_data['rebar_long_pos'])     # 하부 배력근
+        else:
+            # ── 설계 모드: 3겹 배근 (top/bot/dist) ──
+            db_sc, s_sc = _parse_slab_rebar(slab_data.get('rebar_string_top', ''))
+            db_sp, s_sp = _parse_slab_rebar(slab_data.get('rebar_string_bot', ''))
+            db_lc, s_lc = 0, 0  # 설계모드: 상부 배력근 없음
+            db_lp, s_lp = _parse_slab_rebar(slab_data.get('rebar_string_dist', ''))
+
+        # 이음길이
         _slab_dev_top = slab_data.get('dev_top')
         _slab_dev_bot = slab_data.get('dev_bot')
         _ssp_top = _slab_dev_top['ls_B'] / 2 if _slab_dev_top else 0
         _ssp_bot = _slab_dev_bot['ls_B'] / 2 if _slab_dev_bot else 0
 
+        # 1방향 슬래브: 단변=주근 방향, 장변=배력근 방향
         if Lx <= Ly:
             main_axis = 'X'
             main_span = Lx
-            dist_span = Ly
         else:
             main_axis = 'Y'
             main_span = Ly
-            dist_span = Lx
 
         _L4 = main_span / 4
         _3L4 = 3 * main_span / 4
-
         _beam_cover = 40.0
-        _hook_slab_top = 12 * db_top
-        _hook_slab_bot = 12 * db_bot
 
-        # 두 레벨 반복: (z기준높이, 주근방향 지지보폭, 배력근방향 지지보폭)
+        _hook_sc = 12 * db_sc if db_sc > 0 else 0
+        _hook_lc = 12 * db_lc if db_lc > 0 else 0
+        _hook_lp = 12 * db_lp if db_lp > 0 else 0
+
+        # 레벨 결정
         _ground_slab_z = max(gbx_h, gby_h)
-        if main_axis == 'X':
-            _slab_levels = [
-                (H,              by_w,  bx_w),    # 상부 슬래브
-                (_ground_slab_z, gby_w, gbx_w),   # 바닥 슬래브
-            ]
+        _slab_pos = slab_data.get('position', '천장 슬래브')
+        if _is_review_slab:
+            # 검토 모드: position에 따라 바닥 또는 천장
+            if _slab_pos == '바닥 슬래브':
+                if main_axis == 'X':
+                    _slab_levels = [(_ground_slab_z, gby_w or by_w, gbx_w or bx_w)]
+                else:
+                    _slab_levels = [(_ground_slab_z, gbx_w or bx_w, gby_w or by_w)]
+            else:
+                if main_axis == 'X':
+                    _slab_levels = [(H, by_w, bx_w)]
+                else:
+                    _slab_levels = [(H, bx_w, by_w)]
         else:
-            _slab_levels = [
-                (H,              bx_w,  by_w),    # 상부 슬래브
-                (_ground_slab_z, gbx_w, gby_w),   # 바닥 슬래브
-            ]
+            # 설계 모드: 상부 + 바닥 둘 다
+            if main_axis == 'X':
+                _slab_levels = [(H, by_w, bx_w), (_ground_slab_z, gby_w, gbx_w)]
+            else:
+                _slab_levels = [(H, bx_w, by_w), (_ground_slab_z, gbx_w, gby_w)]
 
         for _z_ref, _main_bw, _dist_bw in _slab_levels:
-            z_slab_top_bar = _z_ref - slab_cover - db_top / 2.0
-            z_slab_bot_bar = _z_ref - t_slab + slab_cover + db_bot / 2.0
-            z_slab_dist = z_slab_bot_bar + db_bot / 2.0 + db_dist / 2.0 + 2.0
+            # Z 좌표: 4겹 레이어 (위→아래: 상부주근, 상부배력근, 하부배력근, 하부주근)
+            z_top_main = _z_ref - slab_cover - db_sc / 2.0
+            z_top_dist = z_top_main - db_sc / 2.0 - db_lc / 2.0 - 2.0 if db_lc > 0 else z_top_main
+            z_bot_main = _z_ref - t_slab + slab_cover + db_sp / 2.0
+            z_bot_dist = z_bot_main + db_sp / 2.0 + db_lp / 2.0 + 2.0 if db_lp > 0 else z_bot_main
 
             if main_axis == 'X':
+                # 주근 방향: X축 (가로), 배치 간격: Y축
                 _anc_xs = -(_main_bw / 2 - _beam_cover)
                 _anc_xe = Lx + (_main_bw / 2 - _beam_cover)
                 y_start = _dist_bw / 2.0
                 y_end = Ly - _dist_bw / 2.0
 
-                # 상부근 (지점부 + 갈고리 + 겹이음 오버랩)
-                if s_top > 0:
-                    n_top = int(np.floor((y_end - y_start) / s_top)) + 1
-                    for i in range(n_top):
-                        yp = y_start + i * s_top
-                        if yp > y_end:
-                            break
+                # 1) 상부 주근 Short Cont: 전 구간 (갈고리 포함)
+                if s_sc > 0:
+                    n_bars = int(np.floor((y_end - y_start) / s_sc)) + 1
+                    for i in range(n_bars):
+                        yp = y_start + i * s_sc
+                        if yp > y_end: break
                         add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (_anc_xs, yp, z_slab_top_bar), (_L4 + _ssp_top, yp, z_slab_top_bar), db_top / 2, 6)
-                        add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (_3L4 - _ssp_top, yp, z_slab_top_bar), (_anc_xe, yp, z_slab_top_bar), db_top / 2, 6)
-                        # 90° 갈고리 (하향)
-                        add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (_anc_xs, yp, z_slab_top_bar), (_anc_xs, yp, z_slab_top_bar - _hook_slab_top), db_top / 2, 6)
-                        add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (_anc_xe, yp, z_slab_top_bar), (_anc_xe, yp, z_slab_top_bar - _hook_slab_top), db_top / 2, 6)
+                                             (_anc_xs, yp, z_top_main), (_anc_xe, yp, z_top_main), db_sc / 2, 6)
+                        if _hook_sc > 0:
+                            add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
+                                                 (_anc_xs, yp, z_top_main), (_anc_xs, yp, z_top_main - _hook_sc), db_sc / 2, 6)
+                            add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
+                                                 (_anc_xe, yp, z_top_main), (_anc_xe, yp, z_top_main - _hook_sc), db_sc / 2, 6)
 
-                # 하부근 (중앙부 + 겹이음 오버랩)
-                if s_bot > 0:
-                    n_bot = int(np.floor((y_end - y_start) / s_bot)) + 1
-                    for i in range(n_bot):
-                        yp = y_start + i * s_bot
-                        if yp > y_end:
-                            break
+                # 2) 하부 주근 Short Pos: 전 구간
+                if s_sp > 0:
+                    n_bars = int(np.floor((y_end - y_start) / s_sp)) + 1
+                    for i in range(n_bars):
+                        yp = y_start + i * s_sp
+                        if yp > y_end: break
                         add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (_L4 - _ssp_bot, yp, z_slab_bot_bar), (_3L4 + _ssp_bot, yp, z_slab_bot_bar), db_bot / 2, 6)
+                                             (_anc_xs, yp, z_bot_main), (_anc_xe, yp, z_bot_main), db_sp / 2, 6)
 
-                # 배력근: Y방향 배치
-                if s_dist > 0:
-                    _anc_dy_s = -(_dist_bw / 2 - _beam_cover)
-                    _anc_dy_e = Ly + (_dist_bw / 2 - _beam_cover)
-                    x_dist_start = _main_bw / 2.0
-                    x_dist_end = Lx - _main_bw / 2.0
-                    n_dist = int(np.floor((x_dist_end - x_dist_start) / s_dist)) + 1
-                    for i in range(n_dist):
-                        xp = x_dist_start + i * s_dist
-                        if xp > x_dist_end:
-                            break
+                # 배력근 방향: Y축 (세로), 배치 간격: X축
+                _anc_dy_s = -(_dist_bw / 2 - _beam_cover)
+                _anc_dy_e = Ly + (_dist_bw / 2 - _beam_cover)
+                x_dist_start = _main_bw / 2.0
+                x_dist_end = Lx - _main_bw / 2.0
+
+                # 3) 상부 배력근 Long Cont: 전 구간 (갈고리 포함)
+                if s_lc > 0:
+                    n_bars = int(np.floor((x_dist_end - x_dist_start) / s_lc)) + 1
+                    for i in range(n_bars):
+                        xp = x_dist_start + i * s_lc
+                        if xp > x_dist_end: break
                         add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (xp, _anc_dy_s, z_slab_dist), (xp, _anc_dy_e, z_slab_dist), db_dist / 2, 6)
-                        _hook_dist = 12 * db_dist
+                                             (xp, _anc_dy_s, z_top_dist), (xp, _anc_dy_e, z_top_dist), db_lc / 2, 6)
+                        if _hook_lc > 0:
+                            add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
+                                                 (xp, _anc_dy_s, z_top_dist), (xp, _anc_dy_s, z_top_dist - _hook_lc), db_lc / 2, 6)
+                            add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
+                                                 (xp, _anc_dy_e, z_top_dist), (xp, _anc_dy_e, z_top_dist - _hook_lc), db_lc / 2, 6)
+
+                # 4) 하부 배력근 Long Pos: 전 구간 (갈고리 포함)
+                if s_lp > 0:
+                    n_bars = int(np.floor((x_dist_end - x_dist_start) / s_lp)) + 1
+                    for i in range(n_bars):
+                        xp = x_dist_start + i * s_lp
+                        if xp > x_dist_end: break
                         add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (xp, _anc_dy_s, z_slab_dist), (xp, _anc_dy_s, z_slab_dist - _hook_dist), db_dist / 2, 6)
-                        add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (xp, _anc_dy_e, z_slab_dist), (xp, _anc_dy_e, z_slab_dist - _hook_dist), db_dist / 2, 6)
+                                             (xp, _anc_dy_s, z_bot_dist), (xp, _anc_dy_e, z_bot_dist), db_lp / 2, 6)
+                        if _hook_lp > 0:
+                            add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
+                                                 (xp, _anc_dy_s, z_bot_dist), (xp, _anc_dy_s, z_bot_dist - _hook_lp), db_lp / 2, 6)
+                            add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
+                                                 (xp, _anc_dy_e, z_bot_dist), (xp, _anc_dy_e, z_bot_dist - _hook_lp), db_lp / 2, 6)
 
             else:  # main_axis == 'Y'
+                # 주근 방향: Y축 (세로), 배치 간격: X축
                 _anc_ys = -(_main_bw / 2 - _beam_cover)
                 _anc_ye = Ly + (_main_bw / 2 - _beam_cover)
                 x_start = _dist_bw / 2.0
                 x_end = Lx - _dist_bw / 2.0
 
-                # 상부근 (지점부 + 갈고리 + 겹이음 오버랩)
-                if s_top > 0:
-                    n_top = int(np.floor((x_end - x_start) / s_top)) + 1
-                    for i in range(n_top):
-                        xp = x_start + i * s_top
-                        if xp > x_end:
-                            break
+                # 1) 상부 주근 Short Cont: 전 구간 (갈고리 포함)
+                if s_sc > 0:
+                    n_bars = int(np.floor((x_end - x_start) / s_sc)) + 1
+                    for i in range(n_bars):
+                        xp = x_start + i * s_sc
+                        if xp > x_end: break
                         add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (xp, _anc_ys, z_slab_top_bar), (xp, _L4 + _ssp_top, z_slab_top_bar), db_top / 2, 6)
-                        add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (xp, _3L4 - _ssp_top, z_slab_top_bar), (xp, _anc_ye, z_slab_top_bar), db_top / 2, 6)
-                        # 90° 갈고리 (하향)
-                        add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (xp, _anc_ys, z_slab_top_bar), (xp, _anc_ys, z_slab_top_bar - _hook_slab_top), db_top / 2, 6)
-                        add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (xp, _anc_ye, z_slab_top_bar), (xp, _anc_ye, z_slab_top_bar - _hook_slab_top), db_top / 2, 6)
+                                             (xp, _anc_ys, z_top_main), (xp, _anc_ye, z_top_main), db_sc / 2, 6)
+                        if _hook_sc > 0:
+                            add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
+                                                 (xp, _anc_ys, z_top_main), (xp, _anc_ys, z_top_main - _hook_sc), db_sc / 2, 6)
+                            add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
+                                                 (xp, _anc_ye, z_top_main), (xp, _anc_ye, z_top_main - _hook_sc), db_sc / 2, 6)
 
-                # 하부근 (중앙부)
-                if s_bot > 0:
-                    n_bot = int(np.floor((x_end - x_start) / s_bot)) + 1
-                    for i in range(n_bot):
-                        xp = x_start + i * s_bot
-                        if xp > x_end:
-                            break
+                # 2) 하부 주근 Short Pos: 전 구간
+                if s_sp > 0:
+                    n_bars = int(np.floor((x_end - x_start) / s_sp)) + 1
+                    for i in range(n_bars):
+                        xp = x_start + i * s_sp
+                        if xp > x_end: break
                         add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (xp, _L4 - _ssp_bot, z_slab_bot_bar), (xp, _3L4 + _ssp_bot, z_slab_bot_bar), db_bot / 2, 6)
+                                             (xp, _anc_ys, z_bot_main), (xp, _anc_ye, z_bot_main), db_sp / 2, 6)
 
-                # 배력근: X방향 배치
-                if s_dist > 0:
-                    _anc_dx_s = -(_dist_bw / 2 - _beam_cover)
-                    _anc_dx_e = Lx + (_dist_bw / 2 - _beam_cover)
-                    y_dist_start = _main_bw / 2.0
-                    y_dist_end = Ly - _main_bw / 2.0
-                    n_dist = int(np.floor((y_dist_end - y_dist_start) / s_dist)) + 1
-                    for i in range(n_dist):
-                        yp = y_dist_start + i * s_dist
-                        if yp > y_dist_end:
-                            break
+                # 배력근 방향: X축 (가로), 배치 간격: Y축
+                _anc_dx_s = -(_dist_bw / 2 - _beam_cover)
+                _anc_dx_e = Lx + (_dist_bw / 2 - _beam_cover)
+                y_dist_start = _main_bw / 2.0
+                y_dist_end = Ly - _main_bw / 2.0
+
+                # 3) 상부 배력근 Long Cont: 전 구간 (갈고리 포함)
+                if s_lc > 0:
+                    n_bars = int(np.floor((y_dist_end - y_dist_start) / s_lc)) + 1
+                    for i in range(n_bars):
+                        yp = y_dist_start + i * s_lc
+                        if yp > y_dist_end: break
                         add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (_anc_dx_s, yp, z_slab_dist), (_anc_dx_e, yp, z_slab_dist), db_dist / 2, 6)
-                        _hook_dist = 12 * db_dist
+                                             (_anc_dx_s, yp, z_top_dist), (_anc_dx_e, yp, z_top_dist), db_lc / 2, 6)
+                        if _hook_lc > 0:
+                            add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
+                                                 (_anc_dx_s, yp, z_top_dist), (_anc_dx_s, yp, z_top_dist - _hook_lc), db_lc / 2, 6)
+                            add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
+                                                 (_anc_dx_e, yp, z_top_dist), (_anc_dx_e, yp, z_top_dist - _hook_lc), db_lc / 2, 6)
+
+                # 4) 하부 배력근 Long Pos: 전 구간 (갈고리 포함)
+                if s_lp > 0:
+                    n_bars = int(np.floor((y_dist_end - y_dist_start) / s_lp)) + 1
+                    for i in range(n_bars):
+                        yp = y_dist_start + i * s_lp
+                        if yp > y_dist_end: break
                         add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (_anc_dx_s, yp, z_slab_dist), (_anc_dx_s, yp, z_slab_dist - _hook_dist), db_dist / 2, 6)
-                        add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
-                                             (_anc_dx_e, yp, z_slab_dist), (_anc_dx_e, yp, z_slab_dist - _hook_dist), db_dist / 2, 6)
+                                             (_anc_dx_s, yp, z_bot_dist), (_anc_dx_e, yp, z_bot_dist), db_lp / 2, 6)
+                        if _hook_lp > 0:
+                            add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
+                                                 (_anc_dx_s, yp, z_bot_dist), (_anc_dx_s, yp, z_bot_dist - _hook_lp), db_lp / 2, 6)
+                            add_cylinder_to_mesh(vx_slab, vy_slab, vz_slab, ii_slab, jj_slab, kk_slab,
+                                                 (_anc_dx_e, yp, z_bot_dist), (_anc_dx_e, yp, z_bot_dist - _hook_lp), db_lp / 2, 6)
 
     # 4. 최종 메쉬 트레이스 추가
     if vx_main:

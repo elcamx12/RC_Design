@@ -9,7 +9,7 @@ KDS 수식을 검토 전용으로 별도 구현합니다.
 - 단면 크기 고정 (수렴루프 없음)
 - 보: END-I / MID / END-J 위치별 독립 설계
 - 기둥: Pu/Mux/Muy 직접 사용
-- 슬래브 설계 제외
+- 슬래브: 1방향 모멘트 계수법 독립 계산 + BeST 비교
 """
 
 import numpy as np
@@ -59,6 +59,30 @@ def _get_epsilon_cu(fc_k):
         return 0.0033
     else:
         return max(0.0033 - 0.0001 * ((fc_k - 40) / 10.0), 0.0026)
+
+
+def _calc_phi(epsilon_t, fy, phi_comp=0.65, phi_tens=0.85):
+    """KDS 14 20 10 강도감소계수 φ 계산.
+    - 인장지배: εt ≥ εt_limit → φ = phi_tens (0.85)
+    - 압축지배: εt ≤ 0.002 → φ = phi_comp (0.65)
+    - 전이구간: 선형보간 φ = phi_comp + (εt - 0.002)/0.003 × (phi_tens - phi_comp)
+    - fy > 400MPa: 인장지배한계 = 2.5 × εy (KDS 14 20 20)
+    """
+    eps_y = fy / 200000.0
+    # 인장지배변형률 한계  # KDS 14 20 20
+    if fy > 400:
+        et_limit = 2.5 * eps_y  # fy=440 → 0.0055, fy=500 → 0.00625
+    else:
+        et_limit = 0.005
+    # 압축지배변형률 한계 = 0.002 (KDS 14 20 10)
+    et_comp = 0.002
+
+    if epsilon_t >= et_limit:
+        return phi_tens
+    elif epsilon_t <= et_comp:
+        return phi_comp
+    else:
+        return phi_comp + (epsilon_t - et_comp) / (et_limit - et_comp) * (phi_tens - phi_comp)
 
 
 def _round_down_50(value):
@@ -218,14 +242,7 @@ def _review_flexural(Mu, b, h, fc_k, fy, cover=40.0, Loc=None):
         a_iter = (As_iter * fy) / (alpha1 * fc_k * b)
         c_iter = a_iter / beta1
         epsilon_t_iter = epsilon_cu * (d - c_iter) / c_iter if c_iter > 0 else 0.005
-
-        _eps_y = fy / 200000.0  # KDS: epsilon_y = fy/Es
-        if epsilon_t_iter >= 0.005:
-            phi_new = 0.85
-        elif epsilon_t_iter <= _eps_y:
-            phi_new = 0.65
-        else:
-            phi_new = 0.65 + (epsilon_t_iter - _eps_y) * 0.20 / (0.005 - _eps_y)
+        phi_new = _calc_phi(epsilon_t_iter, fy)  # KDS 14 20 10
 
         if abs(phi_new - phi) < 1e-4:
             phi = phi_new
@@ -480,13 +497,7 @@ def _calc_phi_Mn(As, b, d, fc_k, fy):
     a = (As * fy) / (alpha1 * fc_k * b)
     c = a / beta1
     epsilon_t = ecu * (d - c) / c if c > 0 else 0.1
-    eps_y = fy / 200000.0  # Es = 200,000 MPa
-    if epsilon_t >= 0.005:
-        phi = 0.85
-    elif epsilon_t <= eps_y:
-        phi = 0.65
-    else:
-        phi = 0.65 + (epsilon_t - eps_y) * (0.85 - 0.65) / (0.005 - eps_y)
+    phi = _calc_phi(epsilon_t, fy)  # KDS 14 20 10
     phi_Mn = phi * As * fy * (d - a / 2.0) / 1e6  # N·mm → kN·m
     return phi_Mn, phi, a, c, epsilon_t
 
@@ -537,13 +548,7 @@ def _calc_phi_Mn_doubly(As, As_comp, b, d, d_prime, fc_k, fy):
     epsilon_t = ecu * (d - c) / c if c > 0 else 0.1
     cb = ecu / (ecu + eps_y) * d
 
-    # φ 결정
-    if epsilon_t >= 0.005:
-        phi = 0.85
-    elif epsilon_t <= eps_y:
-        phi = 0.65
-    else:
-        phi = 0.65 + (epsilon_t - eps_y) * (0.85 - 0.65) / (0.005 - eps_y)
+    phi = _calc_phi(epsilon_t, fy)  # KDS 14 20 10
 
     Mn = Cc * (d - a / 2.0) + Cs * (d - d_prime)  # N·mm
     phi_Mn = phi * Mn / 1e6  # kN·m
@@ -648,12 +653,7 @@ def _calc_phi_Mn_layers(layers, b, h, fc_k, fy):
     epsilon_t = ecu * (d_max - c) / c if c > 0 else 0.1
     cb = ecu / (ecu + eps_y) * d_max
 
-    if epsilon_t >= 0.005:
-        phi = 0.85
-    elif epsilon_t <= eps_y:
-        phi = 0.65
-    else:
-        phi = 0.65 + (epsilon_t - eps_y) * (0.85 - 0.65) / (0.005 - eps_y)
+    phi = _calc_phi(epsilon_t, fy)  # KDS 14 20 10
 
     phi_Mn = phi * abs(Mn) / 1e6  # kN·m
 
@@ -689,7 +689,7 @@ def _review_beam_location(Mu_neg, Mu_pos, Vu, b, h, fc_k, fy, cover=40.0,
                            Loc_top=None, Loc_bot=None,
                            rebar_top_str=None, rebar_bot_str=None,
                            stirrup_str=None, skin_rebar_str=None,
-                           b_top=0, h_top=0, use_detailed_shear=True):
+                           b_top=0, h_top=0):
     """
     단일 위치 (END-I / MID / END-J) 검토.
     구조계산서 배근(rebar_top_str/rebar_bot_str)이 주어지면 그걸로 φMn 계산.
@@ -928,16 +928,13 @@ def _review_beam_location(Mu_neg, Mu_pos, Vu, b, h, fc_k, fy, cover=40.0,
         'flexural_steps': steps_pos,
     }
 
-    # 전단: BeST=상세식, MIDAS=간편식
+    # 전단 (항상 상세식 사용)  # KDS 14 20 22
     d_for_shear = steps_neg.get('d', h - 60.0)
-    if use_detailed_shear:
-        _As_tens_for_shear = _neg_As_prov if _neg_As_prov > 0 else (As_doc_top_with_skin if As_doc_top > 0 else 0)
-        _Mu_for_shear = abs(Mu_neg) if abs(Mu_neg) > 0 else abs(Mu_pos)
-        s_final, warn_shear, steps_shear = _review_shear(
-            Vu, b, d_for_shear, fc_k,
-            As_tension=_As_tens_for_shear, Mu=_Mu_for_shear)
-    else:
-        s_final, warn_shear, steps_shear = _review_shear(Vu, b, d_for_shear, fc_k)
+    _As_tens_for_shear = _neg_As_prov if _neg_As_prov > 0 else (As_doc_top_with_skin if As_doc_top > 0 else 0)
+    _Mu_for_shear = abs(Mu_neg) if abs(Mu_neg) > 0 else abs(Mu_pos)
+    s_final, warn_shear, steps_shear = _review_shear(
+        Vu, b, d_for_shear, fc_k,
+        As_tension=_As_tens_for_shear, Mu=_Mu_for_shear)
     _shear_phi = steps_shear.get('phi', 0.75)
     _phi_Vc = _shear_phi * steps_shear.get('Vc_N', 0) / 1000.0  # N → kN
     _Vs_actual = steps_shear.get('Vs_N', 0)
@@ -1036,7 +1033,6 @@ def _review_beam(beam_input, fc_k, fy):
             skin_rebar_str=beam_input.get('skin_rebar', ''),
             b_top=float(beam_input.get('b_top', 0) or 0),
             h_top=float(beam_input.get('h_top', 0) or 0),
-            use_detailed_shear='BeST' in beam_input.get('software', ''),
         )
 
     # 전체 OK 판정
@@ -1125,11 +1121,11 @@ def _review_column(col_input, fc_k, fy):
     """
     name = col_input.get('name', 'Column')
     c_column = float(col_input['c_column'])
-    h_column = float(col_input.get('h_column', 3000))
+    h_column = float(col_input.get('h_column', 0) or 0)
     if h_column <= 0:
-        h_column = 3000.0  # 기본값 3m
+        h_column = 0.0  # 값 없음 — 버튼 비활성화로 여기 도달 안 함
     if c_column <= 0:
-        c_column = 400.0  # 기본값 400mm
+        c_column = 0.0
     Pu = float(col_input.get('Pu', 0))
     Mux_input = float(col_input.get('Mux', 0))  # 원본 입력값
     Muy_input = float(col_input.get('Muy', 0))  # 원본 입력값
@@ -1208,7 +1204,7 @@ def _review_column(col_input, fc_k, fy):
         phi_tens = 0.85
     alpha1, beta1 = _get_alpha1_beta1(fc_k)  # KDS 14 20 20 표 4.1-2
 
-    _col_cover = float(col_input.get('cover', 40.0))
+    _col_cover = float(col_input.get('cover', 0) or 0)
 
     # 주근 파싱
     rebar_vert_str = col_input.get('rebar_vert', '')
@@ -1361,12 +1357,7 @@ def _review_column(col_input, fc_k, fy):
                 Pn_i, Mn_i = _src_forces_at_c(c_i, c_column, d_eff, d_prime, As_half,
                                                alpha1, beta1, fc_k, fy, _ecu_Es, _stl_arg, _fystl_arg)
                 eps_t_i = ecu * max(d_eff - c_i, 0.0) / c_i
-                if eps_t_i >= 0.005:
-                    phi_i = phi_tens
-                elif eps_t_i <= eps_y:
-                    phi_i = phi_comp
-                else:
-                    phi_i = phi_comp + (phi_tens - phi_comp) * (eps_t_i - eps_y) / (0.005 - eps_y)
+                phi_i = _calc_phi(eps_t_i, fy, phi_comp, phi_tens)  # KDS 14 20 10
                 P_cur = phi_i * Pn_i / 1000.0
                 M_cur = phi_i * Mn_i / 1e6
                 if P_cur <= Pu <= P_prev:
@@ -1710,12 +1701,7 @@ def _build_pm_curve(c_column, As_total, d_eff, d_prime, beta1, Ag, fc_k, fy,
 
         # 설계값 (φ 적용 + 캡)
         _eps_ti = ecu * max(d_eff - _c_i, 0.0) / _c_i if _c_i > 0 else 0.1
-        if _eps_ti >= 0.005:
-            _phi_i = phi_tens
-        elif _eps_ti <= eps_y:
-            _phi_i = phi_comp
-        else:
-            _phi_i = phi_comp + (phi_tens - phi_comp) * (_eps_ti - eps_y) / (0.005 - eps_y)
+        _phi_i = _calc_phi(_eps_ti, fy, phi_comp, phi_tens)  # KDS 14 20 10
 
         _phiPn_kN = _phi_i * _Pn_i / 1000.0
         _phiMn_kNm = abs(_phi_i * _Mn_i) / 1e6
@@ -1735,8 +1721,323 @@ def _build_pm_curve(c_column, As_total, d_eff, d_prime, beta1, Ag, fc_k, fy,
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 메인 오케스트레이터
+# 1방향 슬래브 검토
 # ═══════════════════════════════════════════════════════════════════════
+
+def _get_moment_coefficients(boundary):
+    """1방향 슬래브 모멘트 계수 (KDS 14 20 22 4.3.2 근사해석법).
+
+    Args:
+        boundary: "양단연속" | "1단연속" | "양단단순" | "캔틸레버"
+
+    Returns:
+        dict: {cont: 연속단 계수, pos: 중앙부 계수}
+        부호 규약: cont < 0 (부모멘트), pos > 0 (정모멘트)
+    """
+    # KDS 14 20 22 — 연속 1방향 슬래브 근사 모멘트 계수
+    if boundary == "양단연속":
+        return {'cont': -1.0 / 11.0, 'pos': 1.0 / 16.0}  # 내부 스팬
+    elif boundary == "1단연속":
+        return {'cont': -1.0 / 10.0, 'pos': 1.0 / 11.0}
+    elif boundary == "양단단순":
+        return {'cont': 0.0, 'pos': 1.0 / 8.0}
+    elif boundary == "캔틸레버":
+        return {'cont': -1.0 / 2.0, 'pos': 0.0}
+    else:
+        return {'cont': -1.0 / 11.0, 'pos': 1.0 / 16.0}
+
+
+def _calc_min_slab_thickness(Ln_mm, boundary, fy):
+    """처짐 제어 면제 최소 두께 (KDS 14 20 22 표).
+
+    Args:
+        Ln_mm: 순경간 (mm)
+        boundary: 지점 조건
+        fy: 철근 항복강도 (MPa)
+
+    Returns:
+        float: 최소 두께 (mm)
+    """
+    # KDS 14 20 22 표 — 처짐 계산 면제 최소 두께
+    if boundary == "양단단순":
+        ratio = 20.0
+    elif boundary == "1단연속":
+        ratio = 24.0
+    elif boundary == "양단연속":
+        ratio = 28.0
+    elif boundary == "캔틸레버":
+        ratio = 10.0
+    else:
+        ratio = 28.0
+
+    h_min = Ln_mm / ratio
+    # fy ≠ 400 보정 (KDS 14 20 22)
+    if abs(fy - 400.0) > 1.0:
+        h_min *= (0.4 + fy / 700.0)
+    return h_min
+
+
+def _calc_rebar_As_per_m(combo, spacing_mm):
+    """간격별 제공 철근량 (mm²/m).
+
+    Args:
+        combo: "D10", "D10+D13", "D13", "D13+D16", "D16", "D16+D19", "D19", "D19+D22", "D22"
+        spacing_mm: 간격 (mm)
+    """
+    if spacing_mm <= 0:
+        return 0.0
+    n_per_m = 1000.0 / spacing_mm
+
+    if '+' in combo:
+        parts = combo.split('+')
+        a1 = REBAR_SPECS.get(parts[0], {}).get('area', 0.0)
+        a2 = REBAR_SPECS.get(parts[1], {}).get('area', 0.0)
+        return n_per_m * (a1 + a2) / 2.0
+    else:
+        a = REBAR_SPECS.get(combo, {}).get('area', 0.0)
+        return n_per_m * a
+
+
+def _review_slab(slab_input, fc_k, fy):
+    """1방향 슬래브 검토 (KDS 14 20 22).
+
+    Args:
+        slab_input: {name, Lx, Ly, H, fc_k, fy, cover, Wd, Wl,
+                     edge_UP/DN/LT/RT, boundary, selected_rebar, flexure_rows_best}
+        fc_k, fy: 재료
+
+    Returns:
+        dict — 슬래브 검토 결과
+    """
+    import re as _re
+
+    name = slab_input.get('name', 'Slab')
+    Lx = float(slab_input.get('Lx', 0) or 0)   # 단변 mm
+    Ly = float(slab_input.get('Ly', 0) or 0)   # 장변 mm
+    H = float(slab_input.get('H', 0) or 0)      # 두께 mm
+    cover = float(slab_input.get('cover', 0) or 0)
+    Wd = float(slab_input.get('Wd', 0))      # kN/m²
+    Wl = float(slab_input.get('Wl', 0))      # kN/m²
+    boundary = slab_input.get('boundary', '양단연속')
+
+    # Edge beams → 보 폭 추출 (순경간 계산용)
+    def _beam_width(edge_str):
+        if not edge_str:
+            return 0.0
+        m = _re.match(r'(\d+)x(\d+)', str(edge_str))
+        return float(m.group(1)) if m else 0.0
+
+    edge_UP = slab_input.get('edge_UP', '')
+    edge_DN = slab_input.get('edge_DN', '')
+    edge_LT = slab_input.get('edge_LT', '')
+    edge_RT = slab_input.get('edge_RT', '')
+
+    # 순경간 (단변): Lx - 보폭/2 양쪽
+    _bw_up = _beam_width(edge_UP)
+    _bw_dn = _beam_width(edge_DN)
+    Ln_x = Lx - _bw_up / 2.0 - _bw_dn / 2.0  # 단변 순경간 mm
+    Ln_x = max(Ln_x, Lx * 0.8)  # 안전장치
+
+    # 순경간 (장변)
+    _bw_lt = _beam_width(edge_LT)
+    _bw_rt = _beam_width(edge_RT)
+    Ln_y = Ly - _bw_lt / 2.0 - _bw_rt / 2.0
+    Ln_y = max(Ln_y, Ly * 0.8)
+
+    # ── 기본 계산 ──
+    Wu = 1.2 * Wd + 1.6 * Wl  # KDS 14 20 10 하중조합
+    beta = Ly / Lx if Lx > 0 else 2.0
+
+    # 유효 깊이 (주근 D10 기준)
+    d = H - cover - 9.53 / 2.0  # mm
+
+    alpha1, beta1 = _get_alpha1_beta1(fc_k)  # KDS 14 20 20
+    ecu = _get_epsilon_cu(fc_k)
+
+    # ── 1. 최소 두께 검토 ──
+    h_min = _calc_min_slab_thickness(Ln_x, boundary, fy)
+    thk_ok = H >= h_min
+
+    # ── 2. 모멘트 계수법으로 독립 Mu 계산 ── (KDS 14 20 22)
+    coeff = _get_moment_coefficients(boundary)
+    Mu_short_cont = abs(coeff['cont']) * Wu * (Ln_x / 1000.0) ** 2  # kN·m/m
+    Mu_short_pos = coeff['pos'] * Wu * (Ln_x / 1000.0) ** 2
+    # 장변: 1방향 슬래브에서 장변은 온도/건조수축 철근 (최소 배근 지배)
+    # 장변 모멘트는 매우 작으므로 BeST 값이 있으면 BeST ��� 사용, 없으면 0
+    Mu_long_cont = 0.0
+    Mu_long_pos = 0.0
+
+    # 독립 계산 Mu 모음
+    independent_Mu = {
+        'short_cont': round(Mu_short_cont, 2),
+        'short_pos': round(Mu_short_pos, 2),
+        'long_cont': round(Mu_long_cont, 2),
+        'long_pos': round(Mu_long_pos, 2),
+    }
+
+    # ��─ 3. BeST Mu 비교 ──
+    best_Mu = {'short_cont': 0, 'short_pos': 0, 'long_cont': 0, 'long_pos': 0}
+    _best_rows = slab_input.get('flexure_rows_best', []) or []
+    _dir_loc_map = {
+        ('Short', 'Cont'): 'short_cont', ('Short', 'Pos'): 'short_pos',
+        ('Long', 'Cont'): 'long_cont', ('Long', 'Pos'): 'long_pos',
+    }
+    for fr in _best_rows:
+        key = _dir_loc_map.get((fr.get('direction', ''), fr.get('location', '')))
+        if key and fr.get('Mu') is not None and str(fr['Mu']).strip():
+            try:
+                best_Mu[key] = float(fr['Mu'])
+            except (ValueError, TypeError):
+                pass
+
+    # ── 4. 최소 철근비 ── (KDS 14 20 20)
+    # fy ≤ 400: ρ_min = 0.002, fy > 400: ρ_min = 0.0018
+    rho_min = 0.002 if fy <= 400 else 0.0018  # KDS 14 20 20 4.5.1
+    Ast_min = rho_min * 1000.0 * H  # mm²/m (전체 두께 기준)
+
+    # ── 5. 위치별 배근 검토 ──
+    b_unit = 1000.0  # 단위폭 1m
+    selected_rebar = slab_input.get('selected_rebar', {})
+    positions = ['short_cont', 'short_pos', 'long_cont', 'long_pos']
+    pos_labels = {
+        'short_cont': ('Short', 'Cont'), 'short_pos': ('Short', 'Pos'),
+        'long_cont': ('Long', 'Cont'), 'long_pos': ('Long', 'Pos'),
+    }
+
+    flexure_results = {}
+    for pos in positions:
+        # 설계 Mu: 독립 계산 값 사용
+        Mu_design = independent_Mu[pos]
+
+        # 선택된 배근
+        sel = selected_rebar.get(pos, {})
+        combo = sel.get('combo', '')
+        _sp_raw = sel.get('spacing', 0)
+        try:
+            spacing = float(_sp_raw) if str(_sp_raw).strip() else 0.0
+        except (ValueError, TypeError):
+            spacing = 0.0
+
+        # 제공 As
+        As_provided = _calc_rebar_As_per_m(combo, spacing)
+        As_provided = max(As_provided, 0.01)  # 0 방지
+
+        # 최소 철근량 이상인지
+        As_gov = max(Ast_min, 0.01)  # 최소 철근비 지배
+
+        # φMn 계산 (b=1000mm/m)
+        phi_Mn, phi, a, c, epsilon_t = _calc_phi_Mn(As_provided, b_unit, d, fc_k, fy)
+
+        # 소요 Ast 계산 (Mu에서 역산)
+        Mu_N_mm = abs(Mu_design) * 1e6  # kN·m/m → N·mm/m
+        # 근사 역산: a = d - sqrt(d² - 2Mu/(α₁·fck·b·φ))
+        _phi_est = 0.85
+        _denom = alpha1 * fc_k * b_unit * _phi_est
+        if _denom > 0 and d > 0:
+            _disc = d ** 2 - 2.0 * Mu_N_mm / _denom
+            if _disc > 0:
+                a_req = d - np.sqrt(_disc)
+                Ast_req = alpha1 * fc_k * b_unit * a_req / fy
+            else:
+                Ast_req = 0.0
+        else:
+            Ast_req = 0.0
+        Ast_req = max(Ast_req, 0.0)
+
+        # 판정
+        ok_flexure = phi_Mn >= abs(Mu_design) if Mu_design != 0 else True
+        ok_min_As = As_provided >= Ast_min
+
+        flexure_results[pos] = {
+            'direction': pos_labels[pos][0],
+            'location': pos_labels[pos][1],
+            'Mu_independent': Mu_design,
+            'Mu_best': best_Mu[pos],
+            'Mu_diff_pct': round((Mu_design - best_Mu[pos]) / best_Mu[pos] * 100, 1) if best_Mu[pos] != 0 else 0,
+            'Ast_req': round(Ast_req, 1),
+            'Ast_min': round(Ast_min, 1),
+            'combo': combo,
+            'spacing': spacing,
+            'As_provided': round(As_provided, 1),
+            'phi_Mn': round(phi_Mn, 2),
+            'phi': round(phi, 3),
+            'a': round(a, 1),
+            'c': round(c, 1) if c else 0,
+            'epsilon_t': round(epsilon_t, 5),
+            'ok_flexure': ok_flexure,
+            'ok_min_As': ok_min_As,
+            'ok': ok_flexure and ok_min_As,
+        }
+
+    # ── 6. 전단 검토 ── (KDS 14 20 22)
+    # Vu = Wu × Ln/2 (kN/m)
+    Vu_x = Wu * (Ln_x / 1000.0) / 2.0  # kN/m
+    Vu_y = Wu * (Ln_y / 1000.0) / 2.0  # kN/m
+
+    # Vc = (1/6)√fck × b × d (N/m) → kN/m
+    Vc_x = (1.0 / 6.0) * np.sqrt(fc_k) * b_unit * d / 1000.0  # kN/m  # KDS 14 20 22
+    Vc_y = Vc_x  # 같은 단면 (d는 단변 기준)
+    phi_shear = 0.75
+    phi_Vc_x = phi_shear * Vc_x
+    phi_Vc_y = phi_shear * Vc_y
+
+    shear_x_ok = Vu_x <= phi_Vc_x
+    shear_y_ok = Vu_y <= phi_Vc_y
+
+    shear_result = {
+        'Vu_x': round(Vu_x, 1),
+        'phi_Vc_x': round(phi_Vc_x, 1),
+        'ok_x': shear_x_ok,
+        'Vu_y': round(Vu_y, 1),
+        'phi_Vc_y': round(phi_Vc_y, 1),
+        'ok_y': shear_y_ok,
+        'phi': phi_shear,
+    }
+
+    # ── 종합 ──
+    ok_overall = (thk_ok
+                  and all(fr['ok'] for fr in flexure_results.values())
+                  and shear_x_ok and shear_y_ok)
+
+    return {
+        'name': name,
+        'software': slab_input.get('software', 'BeST.RC'),
+        'Lx': Lx, 'Ly': Ly, 'H': H,
+        'cover': cover,
+        'fc_k': fc_k, 'fy': fy,
+        'Wd': Wd, 'Wl': Wl, 'Wu': round(Wu, 2),
+        'beta': round(beta, 4),
+        'Ln_x': round(Ln_x, 1), 'Ln_y': round(Ln_y, 1),
+        'edge_UP': edge_UP, 'edge_DN': edge_DN,
+        'edge_LT': edge_LT, 'edge_RT': edge_RT,
+        'boundary': boundary,
+        # 최소 두께
+        'h_min': round(h_min, 1),
+        'thk_ok': thk_ok,
+        # 배근 검토
+        'alpha1': alpha1, 'beta1': beta1,
+        'd': round(d, 1),
+        'rho_min': rho_min,
+        'Ast_min': round(Ast_min, 1),
+        'independent_Mu': independent_Mu,
+        'best_Mu': best_Mu,
+        'flexure': flexure_results,
+        # 전단
+        'shear': shear_result,
+        # 종합
+        'ok_overall': ok_overall,
+        # 메타데이터 패스스루
+        'spacing_headers': slab_input.get('spacing_headers', []),
+        'flexure_rows_best': _best_rows,
+        'min_spacings_best': slab_input.get('min_spacings', slab_input.get('min_spacings_best', {})),
+        'rho_min_best': slab_input.get('rho_min', slab_input.get('rho_min_best', 0)),
+        'Ast_min_best': slab_input.get('Ast_min', slab_input.get('Ast_min_best', 0)),
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════��═
+# 메인 오케스트레이터
+# ══════════════════════════════════════════════════════════════════════���
 
 def perform_review(review_inputs):
     """
@@ -1767,10 +2068,17 @@ def perform_review(review_inputs):
         _c_fy = float(col_input.get('fy', _default_fy))
         review_columns.append(_review_column(col_input, _c_fck, _c_fy))
 
+    review_slabs = []
+    for slab_input in review_inputs.get('slabs', []):
+        _s_fck = float(slab_input.get('fc_k', _default_fck))
+        _s_fy = float(slab_input.get('fy', _default_fy))
+        review_slabs.append(_review_slab(slab_input, _s_fck, _s_fy))
+
     result = {
         'mode': 'review',
         'fc_k': _default_fck,
         'fy': _default_fy,
+        'review_slabs': review_slabs,
         'review_beams': review_beams,
         'review_columns': review_columns,
     }
@@ -1802,11 +2110,11 @@ _REBAR_SPECS = {
 
 
 def _parse_rebar_for_3d(rebar_string):
-    """배근 문자열 (예: '3-D19') → n, rebar_type, diameter"""
+    """배근 문자열 (예: '3-D19') → n, rebar_type, diameter. 값 없으면 (0, '', 0)"""
     import re
     m = re.match(r'(\d+)\s*-\s*(D\d+)', str(rebar_string or ''))
     if not m:
-        return 2, 'D13', 12.7  # 기본값
+        return 0, '', 0  # 값 없음
     n = int(m.group(1))
     rtype = m.group(2)
     dia = _REBAR_SPECS.get(rtype, {}).get('diameter', 19.1)
@@ -1814,11 +2122,11 @@ def _parse_rebar_for_3d(rebar_string):
 
 
 def _parse_stirrup_for_3d(stirrup_string):
-    """스터럽 문자열 (예: '2-D10 @125') → legs, type, diameter, spacing"""
+    """스터럽 문자열 (예: '2-D10 @125') → legs, type, diameter, spacing. 값 없으면 (0, '', 0, 0)"""
     import re
     m = re.match(r'(\d+)\s*-\s*(D\d+)\s*@\s*(\d+)', str(stirrup_string or ''))
     if not m:
-        return 2, 'D10', 9.53, 200  # 기본값
+        return 0, '', 0, 0  # 값 없음
     legs = int(m.group(1))
     rtype = m.group(2)
     dia = _REBAR_SPECS.get(rtype, {}).get('diameter', 9.53)
@@ -1831,12 +2139,16 @@ def _make_beam_compat(beam_input, beam_result):
     if not beam_input or not beam_result:
         return None
 
-    h = float(beam_input.get('h_beam', 350))
-    b = float(beam_input.get('b_beam', 250))
-    cover = float(beam_input.get('cover', 40))
-    rebar_top = str(beam_input.get('rebar_top', '3-D19'))
-    rebar_bot = str(beam_input.get('rebar_bot', '3-D19'))
-    stirrup_str = str(beam_input.get('stirrup', '2-D10 @200'))
+    h = float(beam_input.get('h_beam', 0) or 0)
+    b = float(beam_input.get('b_beam', 0) or 0)
+    if h <= 0 or b <= 0:
+        return None  # 단면 치수 없으면 3D 렌더링 불가
+    cover = float(beam_input.get('cover', 0) or 0)
+    rebar_top = str(beam_input.get('rebar_top', '') or '')
+    rebar_bot = str(beam_input.get('rebar_bot', '') or '')
+    stirrup_str = str(beam_input.get('stirrup', '') or '')
+    if not rebar_top and not rebar_bot:
+        return None  # 배근 정보 없으면 3D 렌더링 불가
 
     n_top, rtype_top, dia_top = _parse_rebar_for_3d(rebar_top)
     n_bot, rtype_bot, dia_bot = _parse_rebar_for_3d(rebar_bot)
@@ -1844,13 +2156,14 @@ def _make_beam_compat(beam_input, beam_result):
 
     # rebar_steps 호환 dict 생성
     def _make_rebar_steps(n, rtype, dia):
+        _rtype_key = rtype if rtype else 'D13'
         steps = {
             'cover': cover,
             'rebar_specs': _REBAR_SPECS,
-            f'n_final_{rtype}': n,
+            f'n_final_{_rtype_key}': n,
             'selected_rebar_diameter': dia,
-            'As_provided': n * _REBAR_SPECS.get(rtype, {}).get('area', 286.5),
-            'rebar_string': f'{n}-{rtype}',
+            'As_provided': n * _REBAR_SPECS.get(rtype, {}).get('area', 0),
+            'rebar_string': f'{n}-{rtype}' if rtype else '',
             'layer': 1,
         }
         return steps
@@ -1879,12 +2192,16 @@ def _make_column_compat(col_input, col_result):
     if not col_input or not col_result:
         return None
 
-    c = float(col_input.get('c_column', 400))
-    cover = float(col_input.get('cover', 40))
+    c = float(col_input.get('c_column', 0) or 0)
+    cover = float(col_input.get('cover', 0) or 0)
+    if c <= 0:
+        return None  # 기둥 치수 없으면 3D 렌더링 불가
 
     # 기둥 배근 파싱 (예: "12EA-4R-D19" 또는 "8-D22")
     import re
-    rebar_str = str(col_input.get('rebar_top', '') or col_result.get('rebar_string', '8-D22'))
+    rebar_str = str(col_input.get('rebar_vert', '') or col_input.get('rebar_top', '') or '')
+    if not rebar_str.strip():
+        return None  # 기둥 배근 없으면 3D 렌더링 불가
     m_ea = re.search(r'(\d+)\s*EA', rebar_str)
     m_simple = re.match(r'(\d+)\s*-\s*(D\d+)', rebar_str)
 
@@ -1896,21 +2213,20 @@ def _make_column_compat(col_input, col_result):
         n_col = int(m_simple.group(1))
         rtype = m_simple.group(2)
     else:
-        n_col = 8
-        rtype = 'D22'
+        return None  # 배근 문자열 파싱 불가
 
     dia = _REBAR_SPECS.get(rtype, {}).get('diameter', 22.2)
 
     # 띠철근 파싱
-    tie_str = str(col_input.get('stirrup', '') or 'D10@300')
+    tie_str = str(col_input.get('hoop', '') or col_input.get('stirrup', '') or '')
     m_tie = re.match(r'(D\d+)\s*@\s*(\d+)', tie_str)
     if m_tie:
         tie_type = m_tie.group(1)
         tie_spacing = int(m_tie.group(2))
     else:
-        tie_type = 'D10'
-        tie_spacing = 300
-    tie_dia = _REBAR_SPECS.get(tie_type, {}).get('diameter', 9.53)
+        tie_type = ''
+        tie_spacing = 0
+    tie_dia = _REBAR_SPECS.get(tie_type, {}).get('diameter', 0)
 
     return {
         'dimensions': {'c_column': c},
@@ -1925,6 +2241,52 @@ def _make_column_compat(col_input, col_result):
             'tie_rebar_spacing': tie_spacing,
             'tie_rebar_type': tie_type,
         },
+    }
+
+
+def _make_slab_compat(slab_input):
+    """검토 모드의 슬래브 입력 → frame_3d가 이해하는 설계모드 slab dict.
+    4개 배근 위치(short_cont/pos, long_cont/pos)를 frame_3d 호환 키로 변환."""
+    if not slab_input:
+        return None
+
+    t_slab = float(slab_input.get('H', 0) or 0)
+    cover = float(slab_input.get('cover', 0) or 0)
+    if t_slab <= 0:
+        return None  # 슬래브 두께 없으면 3D 렌더링 불가
+    slab_Lx = float(slab_input.get('Lx', 0) or 0)
+    slab_Ly = float(slab_input.get('Ly', 0) or 0)
+
+    selected_rebar = slab_input.get('selected_rebar', {})
+
+    def _combo_to_rebar_str(pos_key):
+        """'D10+D13' combo + spacing → 'D10+D13@200' 형식 문자열"""
+        rb = selected_rebar.get(pos_key, {})
+        combo = rb.get('combo', '')
+        spacing = rb.get('spacing', '')
+        try:
+            spacing = int(float(spacing))
+        except (ValueError, TypeError):
+            spacing = 300
+        return f"{combo}@{spacing}"
+
+    return {
+        'design_params': {'t_slab': t_slab},
+        'cover': cover,
+        'slab_Lx': slab_Lx,
+        'slab_Ly': slab_Ly,
+        'position': slab_input.get('position', '바닥 슬래브'),
+        # 4개 배근 위치 (검토모드 확장)
+        'rebar_short_cont': _combo_to_rebar_str('short_cont'),   # 상부 주근 (단변 방향)
+        'rebar_short_pos': _combo_to_rebar_str('short_pos'),     # 하부 주근 (단변 방향)
+        'rebar_long_cont': _combo_to_rebar_str('long_cont'),     # 상부 배력근 (장변 방향)
+        'rebar_long_pos': _combo_to_rebar_str('long_pos'),       # 하부 배력근 (장변 방향)
+        # 설계모드 호환 키 (fallback용)
+        'rebar_string_top': _combo_to_rebar_str('short_cont'),
+        'rebar_string_bot': _combo_to_rebar_str('short_pos'),
+        'rebar_string_dist': _combo_to_rebar_str('long_pos'),
+        'dev_top': {'ls_B': 400},
+        'dev_bot': {'ls_B': 400},
     }
 
 
@@ -1960,6 +2322,56 @@ def _build_frame_3d_data(frame_mapping, review_beams, review_columns, review_inp
     gb_x_compat = _make_beam_compat(floor_x_input, _find_result_beam(floor_x_name))
     gb_y_compat = _make_beam_compat(floor_y_input, _find_result_beam(floor_y_name))
     col_compat = _make_column_compat(col_input, _find_result_col(col_name))
+    slab_compat = _make_slab_compat(frame_mapping.get('slab'))
+
+    # ── 누락 이유 추적 ──
+    missing_reasons = []
+
+    def _diagnose_beam(label, beam_input, beam_result, compat):
+        if compat:
+            return
+        if not beam_input:
+            missing_reasons.append(f"**{label}**: 매핑에서 선택되지 않음")
+        elif not beam_result:
+            missing_reasons.append(f"**{label}**: 검토 결과 없음 (검토 실행 필요)")
+        else:
+            issues = []
+            h = float(beam_input.get('h_beam', 0) or 0)
+            b = float(beam_input.get('b_beam', 0) or 0)
+            if h <= 0: issues.append("높이(H)=0")
+            if b <= 0: issues.append("폭(B)=0")
+            rt = beam_input.get('rebar_top', '')
+            rb = beam_input.get('rebar_bot', '')
+            if not rt and not rb: issues.append("배근 미입력")
+            missing_reasons.append(f"**{label}**: {', '.join(issues)}" if issues else f"**{label}**: 데이터 부족")
+
+    def _diagnose_col(col_input_d, col_result, compat):
+        if compat:
+            return
+        if not col_input_d:
+            missing_reasons.append("**기둥**: 매핑에서 선택되지 않음")
+        elif not col_result:
+            missing_reasons.append("**기둥**: 검토 결과 없음 (검토 실행 필요)")
+        else:
+            issues = []
+            c = float(col_input_d.get('c_column', 0) or 0)
+            if c <= 0: issues.append("단면 치수=0")
+            rv = col_input_d.get('rebar_vert', '') or col_input_d.get('rebar_top', '')
+            if not rv: issues.append("주근 미입력")
+            missing_reasons.append(f"**기둥**: {', '.join(issues)}" if issues else "**기둥**: 데이터 부족")
+
+    _diagnose_beam("장변보", ceil_x_input, _find_result_beam(ceil_x_name), beam_x_compat)
+    _diagnose_beam("단변보", ceil_y_input, _find_result_beam(ceil_y_name), beam_y_compat)
+    _diagnose_col(col_input, _find_result_col(col_name), col_compat)
+
+    # 슬래브 진단 (선택사항이지만 선택했는데 실패한 경우)
+    _slab_mapped = frame_mapping.get('slab')
+    if _slab_mapped and not slab_compat:
+        _slab_h = float(_slab_mapped.get('H', 0) or 0)
+        if _slab_h <= 0:
+            missing_reasons.append("**슬래브**: 두께(H)=0")
+        else:
+            missing_reasons.append("**슬래브**: 데이터 부족")
 
     # frame_3d가 기대하는 results dict
     compat_results = {}
@@ -1974,26 +2386,45 @@ def _build_frame_3d_data(frame_mapping, review_beams, review_columns, review_inp
     if col_compat:
         compat_results['column'] = col_compat
         compat_results['columns'] = [col_compat]
+    if slab_compat:
+        compat_results['slab'] = slab_compat
 
     # frame_3d가 기대하는 inputs dict
-    # 경간은 구조계산서 span에서 가져옴 (없으면 기본값)
     def _get_span(beam_input):
         if not beam_input:
-            return 5000
-        # mm 단위
-        geo = beam_input.get('geometry', {}) or {}
-        span_m = geo.get('span_m')
+            return 0
+        span_m = beam_input.get('span_m') or (beam_input.get('geometry', {}) or {}).get('span_m')
         if span_m and float(span_m) > 0:
             return float(span_m) * 1000
-        return 5000  # 기본값
+        return 0
+
+    floor_x_input = frame_mapping.get('floor_x')
+    floor_y_input = frame_mapping.get('floor_y')
+    _Lx = _get_span(ceil_x_input)
+    if _Lx <= 0:
+        _Lx = _get_span(floor_x_input)
+    _Ly = _get_span(ceil_y_input)
+    if _Ly <= 0:
+        _Ly = _get_span(floor_y_input)
+
+    _h_col = float(col_input.get('h_column', 0) or 0) if col_input else 0
+
+    # 경간/기둥높이 누락 진단
+    if _Lx <= 0:
+        missing_reasons.append("**장변보 경간(Span)**: 0 또는 미입력")
+    if _Ly <= 0:
+        missing_reasons.append("**단변보 경간(Span)**: 0 또는 미입력")
+    if _h_col <= 0:
+        missing_reasons.append("**기둥 높이(H_col)**: 0 또는 미입력")
 
     compat_inputs = {
-        'L_x': _get_span(ceil_x_input),
-        'L_y': _get_span(ceil_y_input),
-        'h_column': float(col_input.get('h_column', 3000)) if col_input else 3000,
+        'L_x': _Lx,
+        'L_y': _Ly,
+        'h_column': _h_col,
     }
 
     return {
         'results': compat_results,
         'inputs': compat_inputs,
+        'missing_reasons': missing_reasons,
     }

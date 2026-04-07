@@ -124,6 +124,53 @@ class ColumnResult:
         return {k: v for k, v in self.__dict__.items() if v is not None}
 
 
+@dataclass
+class SlabResult:
+    """BeST.RC 슬래브 파싱 결과"""
+    member: str = ""
+    source: str = ""                    # "BeST.RC"
+    # 치수
+    Lx_mm: Optional[float] = None       # 단변 (mm)
+    Ly_mm: Optional[float] = None       # 장변 (mm)
+    H_mm: Optional[float] = None        # 두께 (mm)
+    cover_mm: Optional[float] = None    # 피복두께 (mm)
+    # 재료
+    fck: Optional[float] = None         # MPa
+    fy: Optional[float] = None          # MPa
+    # 가장자리 보
+    edge_UP: Optional[str] = None       # "250x600"
+    edge_DN: Optional[str] = None
+    edge_LT: Optional[str] = None
+    edge_RT: Optional[str] = None
+    # 하중
+    Wd_kNm2: Optional[float] = None     # kN/m²
+    Wl_kNm2: Optional[float] = None     # kN/m²
+    Wu_kNm2: Optional[float] = None     # kN/m²
+    # 최소 두께
+    beta: Optional[float] = None        # Lny/Lnx
+    h_req_mm: Optional[float] = None    # mm
+    thk_ok: Optional[bool] = None
+    # Flexure table — [{direction, location, Mu, rho, Ast, spacings:{col0, col1, col2, col3}}]
+    flexure_rows: Optional[list] = None
+    # Min bar
+    rho_min: Optional[float] = None     # %
+    Ast_min: Optional[float] = None     # mm²/m
+    min_spacings: Optional[dict] = None # {col0:"@190", col1:"@270", ...}
+    # 간격 열 헤더 ("D10", "D10+D13", "D13", "D13+D16" 등)
+    spacing_headers: Optional[list] = None
+    # 전단
+    phi_shear: Optional[float] = None
+    Vux_kN: Optional[float] = None
+    phi_Vcx_kN: Optional[float] = None
+    shear_x_ok: Optional[bool] = None
+    Vuy_kN: Optional[float] = None
+    phi_Vcy_kN: Optional[float] = None
+    shear_y_ok: Optional[bool] = None
+
+    def as_dict(self):
+        return {k: v for k, v in self.__dict__.items() if v is not None}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 위치 기반 유틸리티 함수
 # ─────────────────────────────────────────────────────────────────────────────
@@ -302,6 +349,9 @@ def _classify_page(text):
         return 'midas_beam'
     if 'midas Gen' in text and 'Column' in text:
         return 'midas_column'
+    # 슬래브는 보보다 먼저 판별 (둘 다 BeST.RC이지만 'Slab Dim'으로 구분)
+    if ('BeST.RC' in text or 'MEMBER' in text) and 'Slab Dim' in text:
+        return 'best_rc_slab'
     if 'BeST.RC' in text or ('MEMBER' in text and 'Bending Moment Capacity' in text):
         return 'best_rc_beam'
     if 'BeST.Steel' in text or 'P-M Interaction' in text:
@@ -549,6 +599,287 @@ def _parse_midas_beam(page):
             shear_cr = [w for w in words if 'Check' in w['text'] and w['top'] > shear_w['top'] + 50]
             if shear_cr:
                 r.check_ratio_shear = _three_values_at_row(words, shear_cr[0]['top'], shear_col)
+
+    return r
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BeST.RC Slab — 위치 기반 파싱
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_best_rc_slab(page):
+    """BeST.RC 슬래브 — 위치 기반 파싱"""
+    r = SlabResult(source="BeST.RC")
+    words = _get_words(page)
+
+    # ── 부재명 ──
+    mem_w = _find_word(words, 'MEMBER')
+    if mem_w:
+        row = _words_at_y(words, mem_w['top'])
+        for w in row:
+            if w['text'].startswith(':'):
+                r.member = w['text'][1:].strip()
+                break
+
+    # ── fck ──
+    fck_w = _find_word(words, 'Concrete')
+    if fck_w:
+        row = _words_at_y(words, fck_w['top'])
+        for w in row:
+            if w['text'] == '=' or w['text'].startswith('='):
+                continue
+            v = _sfloat(w['text'])
+            if v and 10 <= v <= 100:
+                r.fck = v
+                break
+
+    # ── fy ──
+    fy_w = _find_word(words, 'Re-bar')
+    if fy_w:
+        row = _words_at_y(words, fy_w['top'])
+        for w in row:
+            v = _sfloat(w['text'])
+            if v and 200 <= v <= 600:
+                r.fy = v
+                break
+
+    # ── Slab Dim: 3000x6000x180 mm (cc=30mm) ──
+    dim_w = _find_word(words, 'Slab', 'Dim')
+    if dim_w:
+        row = _words_at_y(words, dim_w['top'])
+        for w in row:
+            m = re.match(r'(\d+)x(\d+)x(\d+)', w['text'])
+            if m:
+                r.Lx_mm = float(m.group(1))
+                r.Ly_mm = float(m.group(2))
+                r.H_mm = float(m.group(3))
+                break
+        # cover: "=30mm)" 또는 "(cc" + "=30mm)"
+        for w in row:
+            m_cc = re.search(r'=(\d+)mm', w['text'])
+            if m_cc:
+                r.cover_mm = float(m_cc.group(1))
+                break
+
+    # ── Edge Beams ──
+    up_w = _find_word(words, 'UP', exact=True)
+    if up_w:
+        row = _words_at_y(words, up_w['top'])
+        _edge_vals = []
+        for w in row:
+            m_e = re.match(r'(\d+x\d+)', w['text'].replace(',', ''))
+            if m_e:
+                _edge_vals.append(m_e.group(1))
+        if len(_edge_vals) >= 2:
+            r.edge_UP = _edge_vals[0]
+            r.edge_DN = _edge_vals[1]
+        elif len(_edge_vals) == 1:
+            r.edge_UP = _edge_vals[0]
+
+    lt_w = _find_word(words, 'LT', exact=True)
+    if lt_w:
+        row = _words_at_y(words, lt_w['top'])
+        _edge_vals = []
+        for w in row:
+            m_e = re.match(r'(\d+x\d+)', w['text'].replace(',', ''))
+            if m_e:
+                _edge_vals.append(m_e.group(1))
+        if len(_edge_vals) >= 2:
+            r.edge_LT = _edge_vals[0]
+            r.edge_RT = _edge_vals[1]
+        elif len(_edge_vals) == 1:
+            r.edge_LT = _edge_vals[0]
+
+    # ── Applied Loads ──
+    dead_w = _find_word(words, 'Dead', 'Load')
+    if dead_w:
+        row = _words_at_y(words, dead_w['top'])
+        nums = _numbers_at_y(words, dead_w['top'])
+        if nums:
+            r.Wd_kNm2 = nums[-1]
+
+    live_w = _find_word(words, 'Live', 'Load')
+    if live_w:
+        nums = _numbers_at_y(words, live_w['top'])
+        if nums:
+            r.Wl_kNm2 = nums[-1]
+
+    # Wu 행: "W" + subscript "u" 찾기 — "12.01" 같은 값
+    wu_candidates = [w for w in words if w['text'] in ('1.2*W', '1.2*Wd', '1.2*W ') or '1.2*W' in w['text']]
+    if wu_candidates:
+        wu_row_y = wu_candidates[0]['top']
+        nums = _numbers_at_y(words, wu_row_y)
+        if nums:
+            r.Wu_kNm2 = nums[-1]
+
+    # ── β (장단변비) ──
+    beta_w = _find_word(words, 'β')
+    if beta_w:
+        nums = _numbers_at_y(words, beta_w['top'])
+        if nums:
+            r.beta = nums[-1]
+
+    # ── 최소 두께 ──
+    # "Check Minimum Slab Thk." 섹션 찾기
+    check_min_w = _find_word(words, 'Check', 'Minimum')
+    _min_section_y = check_min_w['top'] if check_min_w else 300
+
+    # h_req: "h" 행 중 Check Minimum 섹션 이후의 것
+    for w in words:
+        if w['text'] == 'h' and w['top'] > _min_section_y + 10 and w['x0'] < 100:
+            h_row = _words_at_y(words, w['top'])
+            # 마지막 '=' 뒤의 숫자를 h_req로
+            _last_eq_idx = -1
+            for j, hw in enumerate(h_row):
+                if hw['text'] == '=':
+                    _last_eq_idx = j
+            if _last_eq_idx >= 0 and _last_eq_idx + 1 < len(h_row):
+                v = _sfloat(h_row[_last_eq_idx + 1]['text'])
+                if v and 20 <= v <= 1000:
+                    r.h_req_mm = v
+            break
+
+    # Thk 행: "Thk = 180 > T_req = 114 mm ---> O.K." — 최소두께 섹션 이후의 Thk
+    for w in words:
+        if w['text'] == 'Thk' and w['top'] > _min_section_y + 20 and w['x0'] < 100:
+            row = _words_at_y(words, w['top'])
+            for rw in row:
+                if 'O.K.' in rw['text']:
+                    r.thk_ok = True
+                elif 'N.G.' in rw['text']:
+                    r.thk_ok = False
+            # h_req가 아직 없으면 Thk 행의 마지막 숫자 사용
+            if r.h_req_mm is None:
+                nums = _numbers_at_y(words, w['top'])
+                if len(nums) >= 2:
+                    r.h_req_mm = nums[-1]
+            break
+
+    # ── Flexure Reinforcement 테이블 ──
+    flex_w = _find_word(words, 'Flexure', 'Reinforcement')
+    if flex_w:
+        # 헤더 행 찾기 — "DIREC" 또는 "TION"이 있는 행
+        direc_w = _find_word(words, 'DIREC')
+        if direc_w:
+            header_y = direc_w['top']
+            # 두 번째 헤더행 (TION / tion / (kN·m/m) / (%) 등)에서 간격 열 헤더 추출
+            tion_w = _find_word(words, 'TION')
+            if tion_w:
+                header2_y = tion_w['top']
+                header2_row = _words_at_y(words, header2_y)
+                # 간격 열 헤더: D10, D10+D13, D13, D13+D16 등 (x > 300)
+                _sp_headers = []
+                _sp_x_centers = []
+                for w in header2_row:
+                    if w['x0'] > 290 and ('D' in w['text'] or '+' in w['text']):
+                        _sp_headers.append(w['text'])
+                        _sp_x_centers.append((w['x0'] + w['x1']) / 2.0)
+                r.spacing_headers = _sp_headers if _sp_headers else None
+
+            # 데이터 행 파싱 — Flexure 헤더 아래, Min Bar 위의 모든 숫자 행
+            # 기대 순서: Short Cont, Short Pos(=Span Pos), Long Cont, Long Pos(=Span Pos)
+            _expected = [
+                ('Short', 'Cont'), ('Short', 'Pos'),
+                ('Long', 'Cont'), ('Long', 'Pos'),
+            ]
+            # Min Bar 행 y 찾기 (상한)
+            min_bar_w = _find_word(words, 'Min', 'Bar')
+            _min_bar_y = min_bar_w['top'] if min_bar_w else 9999
+
+            # 헤더 아래 ~ Min Bar 위의 숫자 데이터 행 수집
+            _data_y_set = set()
+            for w in words:
+                if (header2_y + 5 < w['top'] < _min_bar_y - 3
+                        and w['x0'] > 170 and w['x0'] < 210):
+                    # Mu 열 (x≈192) 위치의 숫자
+                    v = _sfloat(w['text'])
+                    if v is not None:
+                        _data_y_set.add(round(w['top'], 1))
+            _data_ys = sorted(_data_y_set)
+
+            r.flexure_rows = []
+            for idx, dy in enumerate(_data_ys):
+                row = _words_at_y(words, dy, tol=3)
+
+                # 방향/위치: 기대 순서에서 가져오기
+                if idx < len(_expected):
+                    direction, location = _expected[idx]
+                else:
+                    direction, location = '', ''
+
+                # 숫자들 추출 (Mu, rho, Ast)
+                nums = _numbers_at_y(words, dy)
+                _mu = nums[0] if len(nums) >= 1 else None
+                _rho = nums[1] if len(nums) >= 2 else None
+                _ast = nums[2] if len(nums) >= 3 else None
+
+                # 간격 추출 — x좌표 기반
+                spacings = {}
+                for w in row:
+                    if w['text'].startswith('@'):
+                        _sp_val = w['text']
+                        _wx = (w['x0'] + w['x1']) / 2.0
+                        if _sp_x_centers:
+                            _best_idx = min(range(len(_sp_x_centers)),
+                                            key=lambda j: abs(_sp_x_centers[j] - _wx))
+                            spacings[f'col{_best_idx}'] = _sp_val
+
+                r.flexure_rows.append({
+                    'direction': direction,
+                    'location': location,
+                    'Mu': _mu,
+                    'rho': _rho,
+                    'Ast': _ast,
+                    'spacings': spacings,
+                })
+
+            # Min Bar 행
+            min_w = _find_word(words, 'Min', 'Bar')
+            if min_w:
+                min_row = _words_at_y(words, min_w['top'])
+                min_nums = _numbers_at_y(words, min_w['top'])
+                if len(min_nums) >= 2:
+                    r.rho_min = min_nums[0]
+                    r.Ast_min = min_nums[1]
+                # 간격들
+                _min_sp = {}
+                for w in min_row:
+                    if w['text'].startswith('@'):
+                        _wx = (w['x0'] + w['x1']) / 2.0
+                        if _sp_x_centers:
+                            _best_idx = min(range(len(_sp_x_centers)),
+                                            key=lambda j: abs(_sp_x_centers[j] - _wx))
+                            _min_sp[f'col{_best_idx}'] = w['text']
+                r.min_spacings = _min_sp if _min_sp else None
+
+    # ── Check Shear Strength ──
+    shear_phi_w = _find_word(words, 'Strength', 'Reduction', 'Factor')
+    if shear_phi_w and shear_phi_w['top'] > 500:  # 전단 섹션의 φ
+        nums = _numbers_at_y(words, shear_phi_w['top'])
+        if nums:
+            r.phi_shear = nums[-1]
+
+    # Vux (Short Direction)
+    vux_candidates = [w for w in words if 'ux' in w['text'] and w['top'] > 550]
+    if vux_candidates:
+        vux_y = vux_candidates[0]['top']
+        row = _words_at_y(words, vux_y)
+        nums = _numbers_at_y(words, vux_y)
+        if len(nums) >= 2:
+            r.Vux_kN = nums[0]
+            r.phi_Vcx_kN = nums[1]
+        r.shear_x_ok = any('O.K.' in w['text'] for w in row)
+
+    # Vuy (Long Direction)
+    vuy_candidates = [w for w in words if 'uy' in w['text'] and w['top'] > 580]
+    if vuy_candidates:
+        vuy_y = vuy_candidates[0]['top']
+        row = _words_at_y(words, vuy_y)
+        nums = _numbers_at_y(words, vuy_y)
+        if len(nums) >= 2:
+            r.Vuy_kN = nums[0]
+            r.phi_Vcy_kN = nums[1]
+        r.shear_y_ok = any('O.K.' in w['text'] for w in row)
 
     return r
 
@@ -1085,6 +1416,7 @@ def parse_pdf(pdf_path: str) -> dict:
         {
           "beams":        [BeamResult, ...],
           "columns":      [ColumnResult, ...],
+          "slabs":        [SlabResult, ...],
           "pages_parsed": int,
           "pages_total":  int,
         }
@@ -1094,6 +1426,7 @@ def parse_pdf(pdf_path: str) -> dict:
 
     beams: list = []
     columns: list = []
+    slabs: list = []
     pages_parsed = 0
 
     with pdfplumber.open(pdf_path) as pdf:
@@ -1106,6 +1439,11 @@ def parse_pdf(pdf_path: str) -> dict:
 
             if kind == 'midas_beam':
                 beams.append(_parse_midas_beam(page))
+                pages_parsed += 1
+                i += 1
+
+            elif kind == 'best_rc_slab':
+                slabs.append(_parse_best_rc_slab(page))
                 pages_parsed += 1
                 i += 1
 
@@ -1151,6 +1489,7 @@ def parse_pdf(pdf_path: str) -> dict:
     return {
         "beams":        beams,
         "columns":      columns,
+        "slabs":        slabs,
         "pages_parsed": pages_parsed,
         "pages_total":  total,
     }
